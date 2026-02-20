@@ -25,11 +25,14 @@ def get_portfolio_data(gc) -> dict:
     """
     基于你的《基金净值总结》表格，动态抓取当前的持仓与盈亏状态
     """
-    sh = gc.open("Fund_Dashboard")
+    # 你的总文件叫 "基金净值总结"
+    sh = gc.open("基金净值总结") 
     try:
-        worksheet = sh.worksheet("基金净值总结")
+        # 存放你各只基金详细数据的那个工作表，应该叫 "Dashboard"
+        worksheet = sh.worksheet("Dashboard") 
     except gspread.exceptions.WorksheetNotFound:
-        raise ValueError("未找到名为 '基金净值总结' 的工作表，请检查表格名称。")
+        raise ValueError("未找到工作表，请检查。")
+    # ...后续代码不变...
         
     data = worksheet.get_all_values()
     if not data:
@@ -182,7 +185,8 @@ def ask_fund_agent(macro_data: dict, portfolio_data: dict) -> str:
 ---
 *(System Note: You are a machine. Output ONLY the requested format. Do NOT generate conversational intro/outro text. Treat the user's cost basis as irrelevant to your decision.)*
 
-
+# 【极其重要】以下是今日 14:45 的实时数据与当前持仓：
+{ai_payload}
 
 
     """
@@ -198,22 +202,23 @@ def ask_fund_agent(macro_data: dict, portfolio_data: dict) -> str:
 # ==========================================
 def update_google_sheet(gc, ai_decision_text: str):
     """
-    将 AI 决策结果追加到 'AI_Daily_Log' 工作表
+    将 AI 决策结果追加到 'AI-参考' 工作表
     """
-    sh = gc.open("Fund_Dashboard")
+    # 依然是打开你的总文件
+    sh = gc.open("基金净值总结")
     
-    # 如果不存在日志表，则动态创建它以防报错
     try:
-        worksheet = sh.worksheet("AI_Daily_Log")
+        # 精准定位到你用来记录 AI 日志的那个子表
+        worksheet = sh.worksheet("AI-参考")
     except gspread.exceptions.WorksheetNotFound:
-        worksheet = sh.add_worksheet(title="AI_Daily_Log", rows="1000", cols="5")
+        # 如果没有，就建一个
+        worksheet = sh.add_worksheet(title="AI-参考", rows="1000", cols="5")
         worksheet.append_row(["日期", "AI 决策与点评"])
-    
+        
     tz_bj = pytz.timezone('Asia/Shanghai')
     today_str = datetime.datetime.now(tz_bj).strftime('%Y-%m-%d %H:%M')
     
     worksheet.append_row([today_str, ai_decision_text])
-
 # ==========================================
 # 主函数组合 (The Workflow)
 # ==========================================
