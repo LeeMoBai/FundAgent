@@ -25,14 +25,11 @@ def get_portfolio_data(gc) -> dict:
     """
     基于你的《基金净值总结》表格，动态抓取当前的持仓与盈亏状态
     """
-    # 你的总文件叫 "基金净值总结"
     sh = gc.open("基金净值总结") 
     try:
-        # 存放你各只基金详细数据的那个工作表，应该叫 "Dashboard"
         worksheet = sh.worksheet("Dashboard") 
     except gspread.exceptions.WorksheetNotFound:
-        raise ValueError("未找到工作表，请检查。")
-    # ...后续代码不变...
+        raise ValueError("未找到名为 'Dashboard' 的工作表，请检查表格名称。")
         
     data = worksheet.get_all_values()
     if not data:
@@ -40,27 +37,26 @@ def get_portfolio_data(gc) -> dict:
 
     headers = data[0]
     
-    # 动态获取列索引，防止你在表里增加列导致报错
+    # 动态获取列索引
     def get_col_idx(keyword):
         for i, h in enumerate(headers):
             if keyword in h: return i
         return -1
 
     idx_name = get_col_idx("基金名称")
-    idx_today_pl = get_col_idx("今日总盈亏") # 表头包含了总盈亏数据
-    idx_total_pl = get_col_idx("累计总盈亏") # 表头包含了总盈亏数据
+    idx_today_pl = get_col_idx("今日总盈亏") 
+    idx_total_pl = get_col_idx("累计总盈亏") 
     idx_proxy_name = get_col_idx("替身代码")
     idx_proxy_price = get_col_idx("实时价格")
     idx_proxy_change = get_col_idx("实时涨跌幅")
 
-    # 1. 从表头提取今日大盘总盈亏（如："今日总盈亏\n-¥374.70"）
+    # 1. 提取今日大盘总盈亏
     overall_today = headers[idx_today_pl].replace('\n', ' ') if idx_today_pl != -1 else "N/A"
     overall_total = headers[idx_total_pl].replace('\n', ' ') if idx_total_pl != -1 else "N/A"
 
     # 2. 遍历提取每个基金的表现
     funds = []
     for row in data[1:]:
-        # 基金代码列如果为空或不是数字，说明是空行或注释，跳过
         if not row or len(row) == 0 or not str(row[0]).strip().isdigit():
             continue
             
@@ -94,18 +90,15 @@ def get_macro_market_data() -> dict:
     market_data = {"system_time": datetime.datetime.now(tz_bj).strftime('%Y-%m-%d %H:%M:%S')}
 
     try:
-        # 韩国 KOSPI 指数 (^KS11)
         kospi = yf.Ticker("^KS11").history(period="2d")
         if len(kospi) >= 2:
             pct_change = ((kospi['Close'].iloc[-1] - kospi['Close'].iloc[-2]) / kospi['Close'].iloc[-2]) * 100
             market_data["KOSPI_change"] = f"{pct_change:.2f}%"
 
-        # 比特币最新价格 (BTC-USD)
         btc = yf.Ticker("BTC-USD").history(period="1d")
         if not btc.empty:
             market_data["BTC_price"] = f"${btc['Close'].iloc[-1]:.2f}"
 
-        # 美国10年期国债收益率 (^TNX)
         us10y = yf.Ticker("^TNX").history(period="1d")
         if not us10y.empty:
             market_data["US10Y_Yield"] = f"{us10y['Close'].iloc[-1]:.3f}%"
@@ -127,7 +120,10 @@ def ask_fund_agent(macro_data: dict, portfolio_data: dict) -> str:
 
     client = genai.Client(api_key=api_key)
     
-    # 组装发给 AI 的完整上下文 JSON
+    # 动态获取今天日期，防止 AI 针对你 Prompt 里写死的 2026年2月 产生时间错觉
+    tz_bj = pytz.timezone('Asia/Shanghai')
+    today_date = datetime.datetime.now(tz_bj).strftime('%Y年%m月%d日')
+    
     ai_payload = json.dumps({
         "macro_background": macro_data,
         "my_portfolio_status": portfolio_data
@@ -159,12 +155,11 @@ def ask_fund_agent(macro_data: dict, portfolio_data: dict) -> str:
    - **资本开支 (Capex) 轮动**：基于思科(Cisco)财报指引，AI 硬件成本高企。上游存储/制造（利好半导体基金）拥有定价权，而下游光模块/组装（利空 CPO 基金）面临压价风险。
    - **假期错位修复**：警惕 A 股休市期间外盘的涨跌幅。若外盘暴涨导致 A 股开盘暴涨，场外基金绝不追高；若假期导致错杀暴跌，则是场外基金买入廉价筹码的极佳时机。
 
-# Input Data Structure (JSON/Text 假设)
+# Input Data Structure
 每次被 API 唤醒时，你将接收到如下结构的实时上下文：
-- `Holdings`: 当前账户各板块权重（如：重仓永赢半导体、防守华宝纳斯达克、底仓港股创新药、规避中航CPO、备用现金水位）。
-- `Real-time Valuation (14:30)`: 各标的当日盘中实时估值与场内 ETF 量价特征（需判断是否放量滞涨）。
-- `Macro & Global Signals`: 昨日美股表现、今日亚洲盘宏观异动（韩股涨跌、BTC价格水位、汇率及美债波动）。
-- `News/Earnings Alerts`: 关键产业事件或财报披露。
+- `Holdings`: 当前账户各板块权重。
+- `Real-time Valuation (14:30)`: 各标的当日盘中实时估值与场内 ETF 量价特征。
+- `Macro & Global Signals`: 全球宏观表现。
 
 # Output Format Requirements
 你在 14:45 被唤醒，必须在 5 秒内给出极简、结构化的 Markdown 响应，不要任何寒暄废话。输出必须严格遵循以下模板：
@@ -177,18 +172,16 @@ def ask_fund_agent(macro_data: dict, portfolio_data: dict) -> str:
 *(只允许输出以下四种状态之一：【锁仓躺平 (不动)】 / 【左侧狙击 (大跌买入)】 / 【右侧止盈 (逻辑证伪卖出)】 / 【定投维持】)*
 
 ### 📝 [15:00 申赎执行单]
-- **标的A (如：永赢半导体)**：操作动作 (不动 / 申购 / 赎回) | 建议金额 (￥) | V2.0 理由 (20字内，必须包含基本面或量价逻辑，如：韩股先行走强，未见放量滞涨，无视浮盈锁仓不动)
-- **标的B (如：华宝纳斯达克)**：操作动作 (不动 / 手动加仓) | 建议金额 (￥) | V2.0 理由 (20字内，如：纳指昨夜暴跌2%，触及V2.0防御加仓线，手动买入1000)
-- **标的C (如：广发港股创新药)**：操作动作 (不动 / 申购) | 建议金额 (￥) | V2.0 理由 (20字内，如：今日估值未跌入 1.33 黄金坑，场外基金绝不追高，保持底仓观望)
-- **标的D (如：中航机遇CPO)**：...
-话。
+- **标的A (如：永赢半导体)**：操作动作 (不动 / 申购 / 赎回) | 建议金额 (￥) | V2.0 理由 (20字内，必须包含基本面或量价逻辑)
+- **标的B (如：华宝纳斯达克)**：操作动作 (不动 / 手动加仓) | 建议金额 (￥) | V2.0 理由 (20字内)
+- **标的C (如：广发港股创新药)**：操作动作 (不动 / 申购) | 建议金额 (￥) | V2.0 理由 (20字内)
+
 ---
 *(System Note: You are a machine. Output ONLY the requested format. Do NOT generate conversational intro/outro text. Treat the user's cost basis as irrelevant to your decision.)*
 
-# 【极其重要】以下是今日 14:45 的实时数据与当前持仓：
+# 【极其重要】当前系统真实日期：{today_date}
+# 以下是今日 14:45 的实时数据与当前持仓：
 {ai_payload}
-
-
     """
 
     response = client.models.generate_content(
@@ -204,14 +197,11 @@ def update_google_sheet(gc, ai_decision_text: str):
     """
     将 AI 决策结果追加到 'AI-参考' 工作表
     """
-    # 依然是打开你的总文件
     sh = gc.open("基金净值总结")
     
     try:
-        # 精准定位到你用来记录 AI 日志的那个子表
         worksheet = sh.worksheet("AI-参考")
     except gspread.exceptions.WorksheetNotFound:
-        # 如果没有，就建一个
         worksheet = sh.add_worksheet(title="AI-参考", rows="1000", cols="5")
         worksheet.append_row(["日期", "AI 决策与点评"])
         
@@ -219,6 +209,7 @@ def update_google_sheet(gc, ai_decision_text: str):
     today_str = datetime.datetime.now(tz_bj).strftime('%Y-%m-%d %H:%M')
     
     worksheet.append_row([today_str, ai_decision_text])
+
 # ==========================================
 # 主函数组合 (The Workflow)
 # ==========================================
@@ -226,26 +217,22 @@ if __name__ == "__main__":
     print("🚀 [Workflow Start] 启动每日 AI 基金决策引擎...")
     
     try:
-        # 初始化 Google 表格客户端
         gc = get_gspread_client()
 
-        # Step 1: 获取数据
         print("⏳ [1/3] 正在获取实际持仓状况与宏观数据...")
         portfolio_data = get_portfolio_data(gc)
         macro_data = get_macro_market_data()
         print("✅ 数据获取成功！")
         print(">> 今日账户概览:", portfolio_data.get("portfolio_summary", {}))
         
-        # Step 2: AI 分析
         print("\n⏳ [2/3] 正在呼叫 Gemini-3.1-pro 大脑进行诊断...")
         ai_response = ask_fund_agent(macro_data, portfolio_data)
         print("✅ AI 思考完毕！内容预览：")
         print("-" * 40)
-        print(ai_response[:200] + "\n......[内容截断]")
+        print(ai_response[:300] + "\n......[内容截断]")
         print("-" * 40)
         
-        # Step 3: 写入日志
-        print("\n⏳ [3/3] 正在将决策写入 AI_Daily_Log...")
+        print("\n⏳ [3/3] 正在将决策写入 [AI-参考] 工作表...")
         update_google_sheet(gc, ai_response)
         print("✅ 写入成功！表格已更新。")
         
