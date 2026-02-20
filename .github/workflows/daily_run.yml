@@ -1,0 +1,30 @@
+name: Daily AI Fund Agent
+
+on:
+  schedule:
+    # UTC 时间早上 8 点运行（对应北京时间下午 4 点，A股刚收盘）
+    - cron: '0 8 * * *'
+  workflow_dispatch: # 允许手动点击运行
+
+jobs:
+  run-agent:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          
+      - name: Run Main Script
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GCP_SERVICE_ACCOUNT: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+        run: |
+          python main.py
