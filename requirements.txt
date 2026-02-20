@@ -1,0 +1,6 @@
+akshare
+yfinance
+google-genai
+gspread
+pytz
+pandas
