@@ -3,7 +3,7 @@ name: Daily AI Fund Agent
 on:
   schedule:
     # UTC 时间早上 8 点运行（对应北京时间下午 4 点，A股刚收盘）
-    - cron: '0 8 * * *'
+    - cron: '45 6 * * *'
   workflow_dispatch: # 允许手动点击运行
 
 jobs:
