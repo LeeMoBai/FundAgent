@@ -240,7 +240,7 @@ def ask_fund_agent(markdown_report: str, account_memory_json: str) -> str:
     
     # 强制切回 Pro 模型
     response = client.models.generate_content(
-        model='gemini-1.5-pro',
+        model='gemini-3.1-pro-preview',
         contents=prompt
     )
     return response.text
