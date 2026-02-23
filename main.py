@@ -32,45 +32,6 @@ def get_macro_data() -> dict:
         "XBI": "XBI"               # 美股生物科技 (创新药风向标)
     }
 
-
-def fetch_global_anchors():
-    """
-    专门用于抓取国际核心资产锚点 (纳指期货、国际黄金)
-    """
-    results = {
-        "NQmain": "N/A",
-        "XAU_USD": "N/A"
-    }
-    
-    try:
-        # 1. 抓取纳指100主力期货 (Ticker: NQ=F)
-        nq = yf.Ticker("NQ=F")
-        nq_data = nq.history(period="2d") # 获取最近两天的收盘价计算涨跌幅
-        if len(nq_data) >= 2:
-            nq_last = nq_data['Close'].iloc[-1]
-            nq_prev = nq_data['Close'].iloc[-2]
-            nq_pct = (nq_last - nq_prev) / nq_prev * 100
-            results["NQmain"] = f"{nq_last:.2f} ({nq_pct:+.2f}%)"
-            
-        # 2. 抓取国际黄金期货主力合约 (Ticker: GC=F)
-        # 注意：现货黄金是 XAU=F，但期货 GC=F 的流动性和指引意义更好
-        gold = yf.Ticker("GC=F")
-        gold_data = gold.history(period="2d")
-        if len(gold_data) >= 2:
-            gold_last = gold_data['Close'].iloc[-1]
-            gold_prev = gold_data['Close'].iloc[-2]
-            gold_pct = (gold_last - gold_prev) / gold_prev * 100
-            results["XAU_USD"] = f"${gold_last:.2f} ({gold_pct:+.2f}%)"
-            
-    except Exception as e:
-        print(f"抓取国际锚点数据失败: {e}")
-        
-    return results
-
-# 测试调用
-anchors = fetch_global_anchors()
-print(f"* **国际金价 (XAU/USD)**: {anchors['XAU_USD']}")
-print(f"* **纳指100期货 (NQmain)**: {anchors['NQmain']}")
     for key, symbol in tickers.items():
         try:
             data = yf.Ticker(symbol).history(period="2d")
@@ -102,7 +63,6 @@ def get_volume_status(proxy_code: str, current_vol_yi: float) -> str:
     对比昨日全天成交额，计算量比状态
     """
     try:
-        # 获取该 ETF 历史日线数据
         hist_df = ak.fund_etf_hist_em(symbol=proxy_code, period="daily")
         if len(hist_df) >= 2:
             yesterday_vol_yi = hist_df.iloc[-2]['成交额'] / 100000000 # 换算为亿
@@ -126,7 +86,6 @@ def collect_full_intelligence(gc) -> tuple:
     tz_bj = pytz.timezone('Asia/Shanghai')
     today_time = datetime.datetime.now(tz_bj).strftime('%Y-%m-%d %H:%M')
     
-    # 抓取宏观
     macro = get_macro_data()
     
     print("   [+] 正在拉取全市场 ETF 实时快照及量比计算...")
@@ -151,17 +110,16 @@ def collect_full_intelligence(gc) -> tuple:
         name = row[idx_name] if idx_name != -1 else "Unknown"
         proxy_raw = row[idx_proxy].strip() if idx_proxy != -1 else ""
         
-        # 正则提取6位纯数字代码
         proxy_match = re.search(r'\d{6}', proxy_raw)
         proxy = proxy_match.group(0) if proxy_match else ""
+        
         position_str = "持仓未知"
         if idx_shares != -1 and idx_nav != -1:
             shares_raw = row[idx_shares].strip().replace(',', '')
             nav_raw = row[idx_nav].strip().replace(',', '')
             try:
-                # 市值 = 份额 * 净值
                 market_value = float(shares_raw) * float(nav_raw)
-                position_str = f"¥{market_value:,.0f}" # 格式化为 ¥11,000 的形式
+                position_str = f"¥{market_value:,.0f}"
             except:
                 position_str = "¥0"
 
@@ -179,30 +137,9 @@ def collect_full_intelligence(gc) -> tuple:
                     status_str = "已到达" if distance <= 0 else "远"
                     extra_note = f" | 距1.33坑位: [{status_str}，差{distance:+.2f}%]"
                 
-                # 👇 把计算出来的 position_str 加到这一行报告里
                 report_line = f"* **{name} ({proxy})**: 盘中 {pct:+.2f}% | 量价: [{vol_status}] | **当前持仓: {position_str}**{extra_note}"
                 etf_reports.append(report_line)
-        if proxy and not etf_spot.empty:
-            match = etf_spot[etf_spot["代码"] == proxy]
-            if not match.empty:
-                price = match.iloc[0]['最新价']
-                pct = match.iloc[0]['涨跌幅']
-                vol_yi = match.iloc[0]['成交额'] / 100000000
-                
-                # 计算真实量比状态
-                vol_status = get_volume_status(proxy, vol_yi)
-                
-                # 特定坑位逻辑
-                extra_note = ""
-                if proxy in ["513120", "159567"]: 
-                    distance = ((price - 1.33) / 1.33) * 100
-                    status_str = "已到达" if distance <= 0 else "远"
-                    extra_note = f" | 距1.33坑位: [{status_str}，差{distance:+.2f}%]"
-                
-                report_line = f"* **{name}替身 ({proxy})**: 现价 {price} | 涨跌幅 {pct:+.2f}% | 量价: [{vol_status}]{extra_note}"
-                etf_reports.append(report_line)
 
-    # 提取内部记忆
     try:
         history_data = sh.worksheet("History").get_all_values()
         recent_3_days = [r for r in history_data[-3:] if any(r)]
@@ -215,8 +152,6 @@ def collect_full_intelligence(gc) -> tuple:
     except:
         recent_5_trades = ["无数据"]
 
-
-# 拼装极其严格的 Markdown
     markdown_report = f"""## 🌍 1. 全球宏观水位 (Macro)
 * **10年期美债 (US10Y)**: {macro.get('US10Y', 'N/A')}
 * **比特币 (BTC)**: {macro.get('BTC', 'N/A')}
@@ -228,6 +163,13 @@ def collect_full_intelligence(gc) -> tuple:
 ## 🎯 2. 核心场内替身盘中表现 (ETF Proxies)
 """
     markdown_report += "\n".join(etf_reports)
+    
+    # 动态抓取持仓的补充说明
+    markdown_report += """\n
+## 🧠 3. 账户记忆与底仓状态 (Account Memory)
+* 注意：本账户动态持仓市值已在上方“场内替身”中列出。
+* **可用现金弹药**: 约 4 万。下达买入指令时需统筹考虑。
+"""
     
     account_memory_json = json.dumps({
         "近期3天账户走势": recent_3_days,
@@ -244,17 +186,14 @@ def ask_fund_agent(markdown_report: str, account_memory_json: str) -> str:
     client = genai.Client(api_key=api_key)
     
     prompt = f"""
-# Role Definition: V2.0 场外基金决策智能体
-你是一个冷酷无情的量化执行机器。你的任务是根据外部宏观数据和内部交易记录，输出精准的交易指令。
+# Role Definition: V2.0 场外基金量化决策中枢 (Fund Decision Agent)
+你是一个极其锐利、冷酷的量化基金决策大脑。你的服务对象是【场外基金】投资者，每天只能以 15:00 的唯一收盘净值成交。你的任务是在每天下午 14:45，接收包含国际前瞻指标、量价数据以及【历史交易记忆】的实时切片，输出带有“V2.0 深度逻辑”的精准操作指令。
 
 【输入情报】：
 {markdown_report}
 
 【内部交易记忆】：
 {account_memory_json}
-
-# Role Definition: V2.0 场外基金量化决策中枢 (Fund Decision Agent)
-你是一个极其锐利、冷酷的量化基金决策大脑。你的服务对象是【场外基金】投资者，每天只能以 15:00 的唯一收盘净值成交。你的任务是在每天下午 14:45，接收包含国际前瞻指标、量价数据以及【历史交易记忆】的实时切片，输出带有“V2.0 深度逻辑”的精准操作指令。
 
 ## 🚫 绝对高压红线 (Strict Enforcements)
 1. **彻底屏蔽股票思维**：禁止输出“高抛低吸、做T、开盘抢筹、逢高减仓”等废话。
@@ -279,12 +218,12 @@ def ask_fund_agent(markdown_report: str, account_memory_json: str) -> str:
 - **A股盘面判定**：(一句话刺穿表象，结合ETF量比数据，判定主力资金是吸筹还是派发。)
 
 ### 📓 [交易记忆与纪律校验]
-- **记忆调取**：(简述传入的近期重大加减仓动作与当前仓位水位。例如：近期已密集收集半导体X万，处于重仓水位。)
+- **记忆调取**：(简述传入的近期重大加减仓动作与当前仓位水位。)
 - **今日盘面**：(当前核心资产的涨跌状态。)
-- **V2.0 判决**：(基于记忆与盘面的硬性约束。例如：筹码已吃饱，今日飘红绝不追高，拒绝无效成本平摊，绝对静止。)
+- **V2.0 判决**：(基于记忆与盘面的硬性约束，得出操作定调。)
 
 ### 🧠 [V2.0 深度推演]
-*(用 2-3 句话，结合宏观数据、最新产业新闻与上述的【纪律校验】，针对账户的半导体或科技线做一个极具穿透力的推演，阐述今日“动或不动”的底层逻辑。)*
+*(用 2-3 句话，结合宏观数据与上述的【纪律校验】，阐述今日的底层逻辑。)*
 
 ### ⚔️ [终极操作指令]
 *(只允许输出以下四种状态之一：【全军静默 (锁仓不动)】 / 【左侧狙击 (大跌买入)】 / 【右侧止盈 (逻辑证伪卖出)】 / 【防御加仓】)*
@@ -295,11 +234,13 @@ def ask_fund_agent(markdown_report: str, account_memory_json: str) -> str:
 - **港股创新药 (019671)**：[不动 / 申购] | ￥[金额] | [30字以内深度理由：必须基于US10Y或坑位判定]
 - **博时黄金 (002611)**：[不动 / 申购] | ￥[金额] | [30字以内深度理由：必须基于XAU/USD表现与美债逻辑]
 - **中航机遇CPO (018957)**：[坚决不动 / 清仓] | ￥0 | [指出其诱多本质或逻辑硬伤]
-*(System Note: Generate ONLY the format above. Do NOT generate conversational intros/outros.)*prompt. Do NOT generate conversational intros/outros.)*
+
+*(System Note: Generate ONLY the format above. Do NOT generate conversational intros/outros.)*
     """
     
+    # 强制切回 Pro 模型
     response = client.models.generate_content(
-        model='gemini-3.1-pro-preview',
+        model='gemini-1.5-pro',
         contents=prompt
     )
     return response.text
@@ -338,7 +279,6 @@ if __name__ == "__main__":
         print("✅ AI 决策完成。")
         
         print("⏳ [3/3] 正在将情报与决策缝合写入 Google Sheets...")
-        # 缝合原始数据与 AI 的分析结论
         full_log_text = f"{md_report}\n\n{'='*40}\n\n{decision}"
         update_google_sheet(gc, full_log_text)
         
