@@ -191,7 +191,7 @@ def ask_fund_agent(markdown_report: str, account_memory_json: str) -> str:
     """
     
     response = client.models.generate_content(
-        model='gemini-3.1-pro', # 依然使用稳定且额度高的 2.0-flash
+        model='gemini-3.1-pro-preview', # 依然使用稳定且额度高的 2.0-flash
         contents=prompt
     )
     return response.text
