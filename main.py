@@ -31,7 +31,46 @@ def get_macro_data() -> dict:
         "NQmain": "NQ=F",          # 纳指100主力期货
         "XBI": "XBI"               # 美股生物科技 (创新药风向标)
     }
+
+
+def fetch_global_anchors():
+    """
+    专门用于抓取国际核心资产锚点 (纳指期货、国际黄金)
+    """
+    results = {
+        "NQmain": "N/A",
+        "XAU_USD": "N/A"
+    }
     
+    try:
+        # 1. 抓取纳指100主力期货 (Ticker: NQ=F)
+        nq = yf.Ticker("NQ=F")
+        nq_data = nq.history(period="2d") # 获取最近两天的收盘价计算涨跌幅
+        if len(nq_data) >= 2:
+            nq_last = nq_data['Close'].iloc[-1]
+            nq_prev = nq_data['Close'].iloc[-2]
+            nq_pct = (nq_last - nq_prev) / nq_prev * 100
+            results["NQmain"] = f"{nq_last:.2f} ({nq_pct:+.2f}%)"
+            
+        # 2. 抓取国际黄金期货主力合约 (Ticker: GC=F)
+        # 注意：现货黄金是 XAU=F，但期货 GC=F 的流动性和指引意义更好
+        gold = yf.Ticker("GC=F")
+        gold_data = gold.history(period="2d")
+        if len(gold_data) >= 2:
+            gold_last = gold_data['Close'].iloc[-1]
+            gold_prev = gold_data['Close'].iloc[-2]
+            gold_pct = (gold_last - gold_prev) / gold_prev * 100
+            results["XAU_USD"] = f"${gold_last:.2f} ({gold_pct:+.2f}%)"
+            
+    except Exception as e:
+        print(f"抓取国际锚点数据失败: {e}")
+        
+    return results
+
+# 测试调用
+anchors = fetch_global_anchors()
+print(f"* **国际金价 (XAU/USD)**: {anchors['XAU_USD']}")
+print(f"* **纳指100期货 (NQmain)**: {anchors['NQmain']}")
     for key, symbol in tickers.items():
         try:
             data = yf.Ticker(symbol).history(period="2d")
