@@ -188,7 +188,8 @@ def collect_full_intelligence(gc) -> tuple:
     except:
         recent_5_trades = ["无数据"]
 
-    # 拼装极其严格的 Markdown
+
+# 拼装极其严格的 Markdown
     markdown_report = f"""## 🌍 1. 全球宏观水位 (Macro)
 * **10年期美债 (US10Y)**: {macro.get('US10Y', 'N/A')}
 * **比特币 (BTC)**: {macro.get('BTC', 'N/A')}
@@ -198,6 +199,11 @@ def collect_full_intelligence(gc) -> tuple:
 * **美股生物科技 (XBI)**: {macro.get('XBI', 'N/A')} (创新药真实风向标)
 
 ## 🎯 2. 核心场内替身盘中表现 (ETF Proxies)
+"""
+    markdown_report += "\n".join(etf_reports)
+    
+    # 👇👇👇 在这里追加第 3 模块：你的静态账户底仓与弹药库 👇👇👇
+    markdown_report += """\n
 ## 🧠 3. 账户记忆与底仓状态 (Account Memory)
 * **半导体**: 重仓 (约1.1万)，近期已密集收集低价筹码，目前浮盈。
 * **机器人**: 中仓 (约5000)，前期已锁仓。
@@ -205,7 +211,6 @@ def collect_full_intelligence(gc) -> tuple:
 * **黄金/创新药**: 底仓状态。
 * **可用现金弹药**: 约 4 万。
 """
-    markdown_report += "\n".join(etf_reports)
     
     account_memory_json = json.dumps({
         "近期3天账户走势": recent_3_days,
