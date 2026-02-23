@@ -231,9 +231,13 @@ if __name__ == "__main__":
         decision = ask_fund_agent(md_report, memory_json)
         print("✅ AI 决策完成：\n", decision[:200], "...\n")
         
-        # 3. 回写表格
+      # 3. 回写表格 (将盘中情报与 AI 决策合并写入)
         print("⏳ [3/3] 正在写入 Google Sheets [AI-参考]...")
-        update_google_sheet(gc, decision)
+        
+        # 拼接原始数据与 AI 的分析结论，中间加一条华丽的分割线
+        full_log_text = f"{md_report}\n\n{'='*40}\n\n{decision}"
+        
+        update_google_sheet(gc, full_log_text)
         
         print("🎉 [Success] 每日任务执行成功！")
         
