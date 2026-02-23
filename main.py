@@ -34,7 +34,8 @@ def get_macro_data() -> dict:
 
     for key, symbol in tickers.items():
         try:
-            data = yf.Ticker(symbol).history(period="2d")
+            # 🎯 核心修复：改为拉取过去 5 天，防止节假日抓不到足够的 K 线
+            data = yf.Ticker(symbol).history(period="5d")
             if len(data) >= 2:
                 prev_close = data['Close'].iloc[-2]
                 current = data['Close'].iloc[-1]
@@ -140,15 +141,22 @@ def collect_full_intelligence(gc) -> tuple:
                 report_line = f"* **{name} ({proxy})**: 盘中 {pct:+.2f}% | 量价: [{vol_status}] | **当前持仓: {position_str}**{extra_note}"
                 etf_reports.append(report_line)
 
+   # ==============================
+    # 🎯 核心修复：从表格“顶部”读取最新记录
+    # ==============================
     try:
         history_data = sh.worksheet("History").get_all_values()
-        recent_3_days = [r for r in history_data[-3:] if any(r)]
+        # History 表前两行是表头，数据从第 3 行开始，且最新日期在最上面
+        valid_history = [r for r in history_data[2:] if any(r) and r[0].strip() != ""]
+        recent_3_days = valid_history[:3] # 切片取最顶部的 3 条
     except:
         recent_3_days = ["无数据"]
         
     try:
         trade_data = sh.worksheet("交易记录").get_all_values()
-        recent_5_trades = [r for r in trade_data[-5:] if any(r)]
+        # 交易记录表第 1 行是表头，数据从第 2 行开始，且最新日期在最上面
+        valid_trades = [r for r in trade_data[1:] if any(r) and r[0].strip() != ""]
+        recent_5_trades = valid_trades[:5] # 切片取最顶部的 5 条
     except:
         recent_5_trades = ["无数据"]
 
