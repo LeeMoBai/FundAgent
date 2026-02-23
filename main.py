@@ -143,7 +143,7 @@ def collect_full_intelligence(gc) -> tuple:
         return next((i for i, h in enumerate(headers) if kw in h), -1)
     
     idx_name, idx_proxy = get_col_idx("基金名称"), get_col_idx("替身代码")
-    
+    idx_shares, idx_nav = get_col_idx("持有份额"), get_col_idx("最新净值")
     etf_reports = []
     
     for row in dash_data[1:]:
@@ -154,7 +154,34 @@ def collect_full_intelligence(gc) -> tuple:
         # 正则提取6位纯数字代码
         proxy_match = re.search(r'\d{6}', proxy_raw)
         proxy = proxy_match.group(0) if proxy_match else ""
-        
+        position_str = "持仓未知"
+        if idx_shares != -1 and idx_nav != -1:
+            shares_raw = row[idx_shares].strip().replace(',', '')
+            nav_raw = row[idx_nav].strip().replace(',', '')
+            try:
+                # 市值 = 份额 * 净值
+                market_value = float(shares_raw) * float(nav_raw)
+                position_str = f"¥{market_value:,.0f}" # 格式化为 ¥11,000 的形式
+            except:
+                position_str = "¥0"
+
+        if proxy and not etf_spot.empty:
+            match = etf_spot[etf_spot["代码"] == proxy]
+            if not match.empty:
+                price = match.iloc[0]['最新价']
+                pct = match.iloc[0]['涨跌幅']
+                vol_yi = match.iloc[0]['成交额'] / 100000000
+                vol_status = get_volume_status(proxy, vol_yi)
+                
+                extra_note = ""
+                if proxy in ["513120", "159567"]: 
+                    distance = ((price - 1.33) / 1.33) * 100
+                    status_str = "已到达" if distance <= 0 else "远"
+                    extra_note = f" | 距1.33坑位: [{status_str}，差{distance:+.2f}%]"
+                
+                # 👇 把计算出来的 position_str 加到这一行报告里
+                report_line = f"* **{name} ({proxy})**: 盘中 {pct:+.2f}% | 量价: [{vol_status}] | **当前持仓: {position_str}**{extra_note}"
+                etf_reports.append(report_line)
         if proxy and not etf_spot.empty:
             match = etf_spot[etf_spot["代码"] == proxy]
             if not match.empty:
@@ -201,16 +228,6 @@ def collect_full_intelligence(gc) -> tuple:
 ## 🎯 2. 核心场内替身盘中表现 (ETF Proxies)
 """
     markdown_report += "\n".join(etf_reports)
-    
-    # 👇👇👇 在这里追加第 3 模块：你的静态账户底仓与弹药库 👇👇👇
-    markdown_report += """\n
-## 🧠 3. 账户记忆与底仓状态 (Account Memory)
-* **半导体**: 重仓 (约1.1万)，近期已密集收集低价筹码，目前浮盈。
-* **机器人**: 中仓 (约5000)，前期已锁仓。
-* **纳斯达克**: 防守仓，每日定投200中。
-* **黄金/创新药**: 底仓状态。
-* **可用现金弹药**: 约 4 万。
-"""
     
     account_memory_json = json.dumps({
         "近期3天账户走势": recent_3_days,
