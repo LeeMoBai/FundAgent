@@ -6,238 +6,237 @@ import gspread
 import akshare as ak
 import yfinance as yf
 from google import genai
+import pandas as pd
 
 # ==========================================
-# 认证初始化：全局复用 Gspread 客户端
+# 0. 认证初始化
 # ==========================================
 def get_gspread_client():
-    """解析 GCP 凭证并返回 gspread 客户端"""
     creds_json = os.environ.get("GCP_SERVICE_ACCOUNT")
     if not creds_json:
         raise ValueError("环境变量中缺失 GCP_SERVICE_ACCOUNT")
-    creds_dict = json.loads(creds_json)
-    return gspread.service_account_from_dict(creds_dict)
+    return gspread.service_account_from_dict(json.loads(creds_json))
 
 # ==========================================
-# 模块 1-A：抓取当前持仓表 (Portfolio Ingestion)
+# 1. 抓取全球宏观数据 (Macro & Futures)
 # ==========================================
-def get_portfolio_data(gc) -> dict:
-    """
-    基于你的《基金净值总结》表格，动态抓取当前的持仓与盈亏状态
-    """
-    sh = gc.open("基金净值总结") 
-    try:
-        worksheet = sh.worksheet("Dashboard") 
-    except gspread.exceptions.WorksheetNotFound:
-        raise ValueError("未找到名为 'Dashboard' 的工作表，请检查表格名称。")
-        
-    data = worksheet.get_all_values()
-    if not data:
-        return {}
-
-    headers = data[0]
-    
-    # 动态获取列索引
-    def get_col_idx(keyword):
-        for i, h in enumerate(headers):
-            if keyword in h: return i
-        return -1
-
-    idx_name = get_col_idx("基金名称")
-    idx_today_pl = get_col_idx("今日总盈亏") 
-    idx_total_pl = get_col_idx("累计总盈亏") 
-    idx_proxy_name = get_col_idx("替身代码")
-    idx_proxy_price = get_col_idx("实时价格")
-    idx_proxy_change = get_col_idx("实时涨跌幅")
-
-    # 1. 提取今日大盘总盈亏
-    overall_today = headers[idx_today_pl].replace('\n', ' ') if idx_today_pl != -1 else "N/A"
-    overall_total = headers[idx_total_pl].replace('\n', ' ') if idx_total_pl != -1 else "N/A"
-
-    # 2. 遍历提取每个基金的表现
-    funds = []
-    for row in data[1:]:
-        if not row or len(row) == 0 or not str(row[0]).strip().isdigit():
-            continue
-            
-        def safe_get(idx):
-            return row[idx] if idx != -1 and idx < len(row) else ""
-
-        fund_info = {
-            "基金名称": safe_get(idx_name),
-            "今日盈亏": safe_get(idx_today_pl),
-            "累计盈亏": safe_get(idx_total_pl),
-            "ETF替身": safe_get(idx_proxy_name),
-            "替身实时状态": safe_get(idx_proxy_price),
-            "替身实时涨跌": safe_get(idx_proxy_change)
-        }
-        funds.append(fund_info)
-
-    return {
-        "portfolio_summary": {
-            "账户今日表现": overall_today,
-            "账户累计表现": overall_total
-        },
-        "holdings_detail": funds
+def get_macro_data() -> dict:
+    macro = {}
+    tickers = {
+        "US10Y": "^TNX",
+        "DXY": "DX-Y.NYB",
+        "BTC": "BTC-USD",
+        "KOSPI": "^KS11",
+        "NQmain": "NQ=F" # 纳指期货
     }
+    
+    for key, symbol in tickers.items():
+        try:
+            data = yf.Ticker(symbol).history(period="2d")
+            if len(data) >= 2:
+                prev_close = data['Close'].iloc[-2]
+                current = data['Close'].iloc[-1]
+                pct_chg = ((current - prev_close) / prev_close) * 100
+                
+                # 针对不同资产格式化
+                if key == "US10Y":
+                    macro[key] = f"{current:.3f}% ({pct_chg:+.2f}%)"
+                elif key == "BTC":
+                    macro[key] = f"${current:,.0f} ({pct_chg:+.2f}%)"
+                else:
+                    macro[key] = f"{current:.2f} ({pct_chg:+.2f}%)"
+            else:
+                macro[key] = "N/A"
+        except:
+            macro[key] = "拉取失败"
+            
+    return macro
 
 # ==========================================
-# 模块 1-B：抓取宏观数据 (Macro Data)
+# 2. 抓取突发新闻 (Nvidia 雷达)
 # ==========================================
-def get_macro_market_data() -> dict:
-    """抓取全球宏观数据作为背景辅助分析"""
-    tz_bj = pytz.timezone('Asia/Shanghai')
-    market_data = {"system_time": datetime.datetime.now(tz_bj).strftime('%Y-%m-%d %H:%M:%S')}
-
+def get_nvda_news() -> str:
     try:
-        kospi = yf.Ticker("^KS11").history(period="2d")
-        if len(kospi) >= 2:
-            pct_change = ((kospi['Close'].iloc[-1] - kospi['Close'].iloc[-2]) / kospi['Close'].iloc[-2]) * 100
-            market_data["KOSPI_change"] = f"{pct_change:.2f}%"
-
-        btc = yf.Ticker("BTC-USD").history(period="1d")
-        if not btc.empty:
-            market_data["BTC_price"] = f"${btc['Close'].iloc[-1]:.2f}"
-
-        us10y = yf.Ticker("^TNX").history(period="1d")
-        if not us10y.empty:
-            market_data["US10Y_Yield"] = f"{us10y['Close'].iloc[-1]:.3f}%"
-    except Exception as e:
-        print(f"⚠️ 宏观数据抓取轻微异常: {e}")
-
-    return market_data
+        news_list = yf.Ticker("NVDA").news
+        if news_list and len(news_list) > 0:
+            top_2 = news_list[:2]
+            news_str = " | ".join([f"[{n['publisher']}] {n['title']}" for n in top_2])
+            return news_str
+    except:
+        pass
+    return "无重大宏观/产业黑天鹅新闻"
 
 # ==========================================
-# 模块 2：AI 调用 (The Brain)
+# 3. 抓取持仓、历史与生成 V2.0 情报简报
 # ==========================================
-def ask_fund_agent(macro_data: dict, portfolio_data: dict) -> str:
-    """
-    使用官方最新 google-genai 库，将持仓情况发给 Gemini
-    """
+def collect_full_intelligence(gc) -> tuple:
+    sh = gc.open("基金净值总结")
+    tz_bj = pytz.timezone('Asia/Shanghai')
+    today_time = datetime.datetime.now(tz_bj).strftime('%Y-%m-%d %H:%M')
+    
+    # 3.1 抓取宏观与新闻
+    macro = get_macro_data()
+    news_alert = get_nvda_news()
+    
+    # 3.2 抓取全市场 ETF 实时行情备用
+    print("   [+] 正在拉取全市场 ETF 实时快照...")
+    try:
+        etf_spot = ak.fund_etf_spot_em()
+    except:
+        etf_spot = pd.DataFrame()
+
+    # 3.3 遍历 Dashboard (当前持仓)
+    ws_dash = sh.worksheet("Dashboard")
+    dash_data = ws_dash.get_all_values()
+    headers = dash_data[0]
+    
+    def get_col_idx(kw):
+        return next((i for i, h in enumerate(headers) if kw in h), -1)
+    
+    idx_name, idx_proxy = get_col_idx("基金名称"), get_col_idx("替身代码")
+    
+    # 构建 ETF 表现文字
+    etf_reports = []
+    funds_context = []
+    
+    for row in dash_data[1:]:
+        if not row or not str(row[0]).strip().isdigit(): continue
+        name = row[idx_name] if idx_name != -1 else "Unknown"
+        proxy = row[idx_proxy].strip() if idx_proxy != -1 else ""
+        
+        if proxy and not etf_spot.empty:
+            match = etf_spot[etf_spot["代码"] == proxy]
+            if not match.empty:
+                price = match.iloc[0]['最新价']
+                pct = match.iloc[0]['涨跌幅']
+                vol = match.iloc[0]['成交额'] / 100000000 # 转换为亿元
+                
+                # 核心逻辑：特殊坑位计算
+                extra_note = ""
+                if proxy == "513120" or proxy == "159567": # 创新药
+                    distance = ((price - 1.33) / 1.33) * 100
+                    extra_note = f" (距1.33坑位还差: {distance:+.2f}%)"
+                
+                report_line = f"* **{name} ({proxy})**: 现价 {price} | 涨跌幅 {pct:+.2f}% | 成交额: {vol:.2f}亿{extra_note}"
+                etf_reports.append(report_line)
+                funds_context.append({"名称": name, "涨跌": f"{pct:+.2f}%"})
+
+    # 3.4 提取向内看的记忆（最近 3 天历史 + 最近 5 笔交易）
+    try:
+        history_data = sh.worksheet("History").get_all_values()
+        recent_3_days = [r for r in history_data[-3:] if any(r)]
+    except:
+        recent_3_days = ["无数据"]
+        
+    try:
+        trade_data = sh.worksheet("交易记录").get_all_values()
+        recent_5_trades = [r for r in trade_data[-5:] if any(r)]
+    except:
+        recent_5_trades = ["无数据"]
+
+    # ==============================
+    # 🎯 拼装 V2.0 终极侦察简报
+    # ==============================
+    markdown_report = f"""# ⚡ V2.0 盘中侦察情报 [{today_time}]
+
+## 🌍 1. 全球宏观水位 (Macro)
+* **10年期美债 (US10Y)**: {macro.get('US10Y', 'N/A')}
+* **美元指数 (DXY)**: {macro.get('DXY', 'N/A')}
+* **比特币 (BTC)**: {macro.get('BTC', 'N/A')}
+* **韩国KOSPI (半导体先行锚)**: {macro.get('KOSPI', 'N/A')}
+* **纳指期货 (NQmain)**: {macro.get('NQmain', 'N/A')}
+
+## 🎯 2. 核心场内替身盘中表现 (ETF Proxies)
+"""
+    markdown_report += "\n".join(etf_reports)
+    
+    markdown_report += f"""
+
+## 📰 3. V2.0 专属雷达预警 (News/Alerts)
+* **英伟达/算力链动态**: {news_alert}
+"""
+
+    account_memory_json = json.dumps({
+        "近期3天账户走势": recent_3_days,
+        "最近5笔真实交易记录": recent_5_trades
+    }, ensure_ascii=False)
+
+    return markdown_report, account_memory_json
+
+# ==========================================
+# 4. AI 决策中枢 (The Brain)
+# ==========================================
+def ask_fund_agent(markdown_report: str, account_memory_json: str) -> str:
     api_key = os.environ.get("GEMINI_API_KEY")
-    if not api_key:
-        raise ValueError("环境变量中缺失 GEMINI_API_KEY")
-
     client = genai.Client(api_key=api_key)
     
-    # 动态获取今天日期，防止 AI 针对你 Prompt 里写死的 2026年2月 产生时间错觉
-    tz_bj = pytz.timezone('Asia/Shanghai')
-    today_date = datetime.datetime.now(tz_bj).strftime('%Y年%m月%d日')
-    
-    ai_payload = json.dumps({
-        "macro_background": macro_data,
-        "my_portfolio_status": portfolio_data
-    }, ensure_ascii=False, indent=2)
-    
     prompt = f"""
-    # Role Definition: V2.0 场外基金决策智能体 (Fund Decision Agent)
-你是一个极其理性的量化基金决策大脑。你的绝对物理限制是：**你服务的对象是【场外基金（Mutual Funds）】投资者，而非股票交易员。** 你的唯一任务是在每天下午 14:45（A 股尾盘关键决策期），接收实时市场切片数据，并输出冷酷、精准的场外基金操作指令。由于场外基金每天只能以 15:00 的唯一收盘净值成交，你必须严格屏蔽所有股票思维。
+# Role Definition: V2.0 场外基金决策智能体
+你是一个极度理性的量化基金决策大脑。
+请严格遵守你的 V2.0 策略纪律（不追高、不窄幅止损、防锚定效应）。
+结合下方的《14:30 侦察情报》和《账户真实记忆》，输出最终的决策。
 
-## 🚫 绝对禁令 (Fund-Only Directives)
-1. **禁止一切盘中短线思维**：绝不允许输出“做T”、“高抛低吸”、“开盘抢筹”、“逢高减仓”、“盘中回落接回”等股票词汇。
-2. **禁止追高场外基金**：如果判定当日某板块大幅高开且维持高位（如暴涨 2% 以上），场外基金买入即接盘，必须指令“错过不追”、“放弃买入”或“锁仓不动”。
-3. **禁止窄幅止损**：场外基金交易存在手续费及时间成本（T+1/T+2）。对于高贝塔（High Beta）资产，-5% 到 -10% 的回撤视为正常呼吸，绝对禁止因为单日 -2% 的波动发出恐慌性减仓指令。
+### 输出格式要求：
+必须包含三个 Markdown 模块：
+1. 🌍 [宏观与主线诊断 (14:45)]
+2. ⚔️ [V2.0 终极操作指令 (场外基金专用)]
+3. 📝 [15:00 申赎执行单] (必须结合近期交易记录，防止重复加仓)
 
-# Core Trading Philosophy: V2.0 基金全周期策略精髓
-在进行 14:45 的判定时，严格贯彻以下三大维度：
+--- 
+# 【外部视野】今日实时侦察情报：
+{markdown_report}
 
-1. **心理防线 (反人性机制)**：
-   - **粉碎锚定效应**：决策判断绝对不能受当前持仓的“成本线”或“浮动盈亏”影响。只看现价与未来逻辑的匹配度。
-   - **离场唯一标准**：卖出的理由只能是“核心逻辑被证伪”（如财报暴雷、宏观崩塌），或者是“连续 2 天出现放量滞涨”（机构派发）。绝不能因为“回本了”或“微赚了”而卖飞主升浪。
-
-2. **宏观与基本面锚点 (Macro & Fundamental Anchors)**：
-   - 绝不孤立看 A 股涨跌。必须将 **韩国股市 (KOSPI/EWY)** 表现作为半导体周期的先行指标。
-   - 必须将 **比特币 (BTC) 流动性** 作为全球风险偏好（Risk Appetite）的核心观测器。
-   - 紧盯 **10年期美债收益率 (US10Y)**。美债利率下降则利好创新药(XBI)/黄金等超跌利率敏感资产；美债利率飙升则必须防御。
-
-3. **近期战役背景 (2026年2月下旬核心剧本)**：
-   - **英伟达 (2.26) 财报博弈**：这是科技股绝对的生死线。判断半导体和纳指的操作，必须评估财报前的抢跑情绪。
-   - **资本开支 (Capex) 轮动**：基于思科(Cisco)财报指引，AI 硬件成本高企。上游存储/制造（利好半导体基金）拥有定价权，而下游光模块/组装（利空 CPO 基金）面临压价风险。
-   - **假期错位修复**：警惕 A 股休市期间外盘的涨跌幅。若外盘暴涨导致 A 股开盘暴涨，场外基金绝不追高；若假期导致错杀暴跌，则是场外基金买入廉价筹码的极佳时机。
-
-# Input Data Structure
-每次被 API 唤醒时，你将接收到如下结构的实时上下文：
-- `Holdings`: 当前账户各板块权重。
-- `Real-time Valuation (14:30)`: 各标的当日盘中实时估值与场内 ETF 量价特征。
-- `Macro & Global Signals`: 全球宏观表现。
-
-# Output Format Requirements
-你在 14:45 被唤醒，必须在 5 秒内给出极简、结构化的 Markdown 响应，不要任何寒暄废话。输出必须严格遵循以下模板：
-
-### 🌍 [宏观与主线诊断 (14:45)]
-- **全球宏观水位**：(一句话定性，如：美债回落至4.06%，全球流动性重回宽裕 / BTC下破支撑，警惕避险...)
-- **A股盘面判定**：(一句话判定当前资金流向，例如：半导体场内 ETF 缩量抗跌，主线逻辑未变；大盘属于技术性错杀...)
-
-### ⚔️ [V2.0 终极操作指令 (场外基金专用)]
-*(只允许输出以下四种状态之一：【锁仓躺平 (不动)】 / 【左侧狙击 (大跌买入)】 / 【右侧止盈 (逻辑证伪卖出)】 / 【定投维持】)*
-
-### 📝 [15:00 申赎执行单]
-- **标的A (如：永赢半导体)**：操作动作 (不动 / 申购 / 赎回) | 建议金额 (￥) | V2.0 理由 (20字内，必须包含基本面或量价逻辑)
-- **标的B (如：华宝纳斯达克)**：操作动作 (不动 / 手动加仓) | 建议金额 (￥) | V2.0 理由 (20字内)
-- **标的C (如：广发港股创新药)**：操作动作 (不动 / 申购) | 建议金额 (￥) | V2.0 理由 (20字内)
-
----
-*(System Note: You are a machine. Output ONLY the requested format. Do NOT generate conversational intro/outro text. Treat the user's cost basis as irrelevant to your decision.)*
-
-# 【极其重要】当前系统真实日期：{today_date}
-# 以下是今日 14:45 的实时数据与当前持仓：
-{ai_payload}
+# 【内部记忆】你服务的账户近期历史与交易操作：
+{account_memory_json}
     """
-
+    
     response = client.models.generate_content(
-        model='gemini-3.1-pro-preview',
+        model='gemini-2.0-flash', # 依然使用稳定且额度高的 2.0-flash
         contents=prompt
     )
     return response.text
 
 # ==========================================
-# 模块 3：写入 Google Sheets (The Hand)
+# 5. 回写 Google Sheet
 # ==========================================
-def update_google_sheet(gc, ai_decision_text: str):
-    """
-    将 AI 决策结果追加到 'AI-参考' 工作表
-    """
+def update_google_sheet(gc, ai_decision: str):
     sh = gc.open("基金净值总结")
-    
     try:
-        worksheet = sh.worksheet("AI-参考")
-    except gspread.exceptions.WorksheetNotFound:
-        worksheet = sh.add_worksheet(title="AI-参考", rows="1000", cols="5")
-        worksheet.append_row(["日期", "AI 决策与点评"])
-        
-    tz_bj = pytz.timezone('Asia/Shanghai')
-    today_str = datetime.datetime.now(tz_bj).strftime('%Y-%m-%d %H:%M')
+        ws = sh.worksheet("AI-参考")
+    except:
+        ws = sh.add_worksheet("AI-参考", 1000, 5)
     
-    worksheet.append_row([today_str, ai_decision_text])
+    today_str = datetime.datetime.now(pytz.timezone('Asia/Shanghai')).strftime('%Y-%m-%d %H:%M')
+    ws.append_row([today_str, ai_decision])
 
 # ==========================================
-# 主函数组合 (The Workflow)
+# Workflow 主入口
 # ==========================================
 if __name__ == "__main__":
-    print("🚀 [Workflow Start] 启动每日 AI 基金决策引擎...")
-    
+    print("🚀 [Workflow Start] 启动 V2.0 全息量化引擎...")
     try:
         gc = get_gspread_client()
-
-        print("⏳ [1/3] 正在获取实际持仓状况与宏观数据...")
-        portfolio_data = get_portfolio_data(gc)
-        macro_data = get_macro_market_data()
-        print("✅ 数据获取成功！")
-        print(">> 今日账户概览:", portfolio_data.get("portfolio_summary", {}))
         
-        print("\n⏳ [2/3] 正在呼叫 Gemini-3.1-pro 大脑进行诊断...")
-        ai_response = ask_fund_agent(macro_data, portfolio_data)
-        print("✅ AI 思考完毕！内容预览：")
-        print("-" * 40)
-        print(ai_response[:300] + "\n......[内容截断]")
-        print("-" * 40)
+        # 1. 抓取所有情报 (格式化简报 + 内部记忆)
+        print("⏳ [1/3] 正在生成《V2.0 盘中侦察情报》与提取账户记忆...")
+        md_report, memory_json = collect_full_intelligence(gc)
         
-        print("\n⏳ [3/3] 正在将决策写入 [AI-参考] 工作表...")
-        update_google_sheet(gc, ai_response)
-        print("✅ 写入成功！表格已更新。")
+        print("\n" + "="*50)
+        print("👇 你可以直接复制以下简报去网页版 Gemini 讨论 👇")
+        print(md_report)
+        print("="*50 + "\n")
         
-        print("\n🎉 [Workflow Success] 今日自动化诊断任务圆满完成！")
+        # 2. 调用 AI 大脑
+        print("⏳ [2/3] 正在唤醒自动 AI Agent 进行决策...")
+        decision = ask_fund_agent(md_report, memory_json)
+        print("✅ AI 决策完成：\n", decision[:200], "...\n")
+        
+        # 3. 回写表格
+        print("⏳ [3/3] 正在写入 Google Sheets [AI-参考]...")
+        update_google_sheet(gc, decision)
+        
+        print("🎉 [Success] 每日任务执行成功！")
         
     except Exception as e:
-        print(f"\n❌ [Workflow Failed] 任务执行失败，错误信息: {e}")
+        print(f"❌ [Failed] 报错信息: {e}")
         raise e
