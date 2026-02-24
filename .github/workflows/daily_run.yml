@@ -2,9 +2,11 @@ name: Daily AI Fund Agent
 
 on:
   schedule:
-    # 提前到 14:38 触发，周一到周五运行 (1-5)
-    - cron: '38 6 * * 1-5'
-  workflow_dispatch:
+    # 使用奇数分钟 32，避开全球 30/45 的排队高峰
+    # UTC 06:32 = 北京时间 14:32 触发。排队几分钟后，刚好在 14:40 左右执行完毕
+    # 1-5 代表只在周一到周五（A股交易日）运行，周末让它休息
+    - cron: '32 6 * * 1-5'
+  workflow_dispatch: # 保持允许手动点击
 
 jobs:
   run-agent:
