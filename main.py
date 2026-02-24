@@ -8,6 +8,7 @@ import yfinance as yf
 from google import genai
 import pandas as pd
 import re
+import requests  # 🎯 新增：用于微信推送
 
 # ==========================================
 # 0. 认证初始化
@@ -19,7 +20,7 @@ def get_gspread_client():
     return gspread.service_account_from_dict(json.loads(creds_json))
 
 # ==========================================
-# 1. 抓取全球宏观数据 (包含真实底层资产)
+# 1. 抓取全球宏观数据
 # ==========================================
 def get_macro_data() -> dict:
     macro = {}
@@ -34,7 +35,6 @@ def get_macro_data() -> dict:
 
     for key, symbol in tickers.items():
         try:
-            # 🎯 拉取过去 5 天，防止周末/节假日抓不到最新K线
             data = yf.Ticker(symbol).history(period="5d")
             if len(data) >= 2:
                 prev_close = data['Close'].iloc[-2]
@@ -57,7 +57,7 @@ def get_macro_data() -> dict:
     return macro
 
 # ==========================================
-# 2. 动态计算量比 (Volume Ratio)
+# 2. 动态计算量比
 # ==========================================
 def get_volume_status(proxy_code: str, current_vol_yi: float) -> str:
     try:
@@ -77,7 +77,7 @@ def get_volume_status(proxy_code: str, current_vol_yi: float) -> str:
     return "量比暂无"
 
 # ==========================================
-# 3. 核心：计算年线乖离率与1年水位分位 (雷达专属)
+# 3. 计算雷达年线乖离率与1年水位
 # ==========================================
 def get_radar_technical_data(proxy_code: str, current_price: float) -> str:
     try:
@@ -117,7 +117,6 @@ def collect_full_intelligence(gc) -> tuple:
     except:
         etf_spot = pd.DataFrame()
 
-    # --- 处理现役底仓 (Dashboard) 并动态组装规则 ---
     ws_dash = sh.worksheet("Dashboard")
     dash_data = ws_dash.get_all_values()
     headers_dash = dash_data[0]
@@ -129,7 +128,7 @@ def collect_full_intelligence(gc) -> tuple:
     idx_proxy = get_col_idx(headers_dash, "替身代码")
     idx_shares = get_col_idx(headers_dash, "持有份额")
     idx_nav = get_col_idx(headers_dash, "最新净值")
-    idx_rule = get_col_idx(headers_dash, "战术纪律") # 🎯 动态战术列
+    idx_rule = get_col_idx(headers_dash, "战术纪律") 
     
     etf_reports = []
     dynamic_rules = []
@@ -141,11 +140,10 @@ def collect_full_intelligence(gc) -> tuple:
         proxy_raw = row[idx_proxy].strip() if idx_proxy != -1 else ""
         proxy = re.search(r'\d{6}', proxy_raw).group(0) if re.search(r'\d{6}', proxy_raw) else ""
         
-        # 🎯 动态组装战术纪律与输出模板
         rule_text = row[idx_rule].strip() if idx_rule != -1 and len(row) > idx_rule else "结合宏观与量价数据严格执行纪律"
         if rule_text:
             dynamic_rules.append(f"- **【{name}】**：{rule_text}")
-        dynamic_exec_template.append(f"- **{name}**：[不动 / 申赎买卖] | ￥[金额] | [30字深度理由：必须紧扣专属纪律]")
+        dynamic_exec_template.append(f"- **{name}**：[不动 / 申赎买卖] | ￥[金额] | [理由：包含置信度评估与证伪条件]")
         
         position_str = "持仓未知"
         if idx_shares != -1 and idx_nav != -1:
@@ -167,7 +165,6 @@ def collect_full_intelligence(gc) -> tuple:
                 vol_status = get_volume_status(proxy, match.iloc[0]['成交额'] / 100000000)
                 etf_reports.append(f"* **{name} ({proxy})**: 盘中 {pct:+.2f}% | 量价: [{vol_status}] | **当前持仓: {position_str}**")
 
-    # --- 处理雷达监控池 (雷达监控) ---
     print("   [+] 正在启动 V2.0 深潜雷达探测器...")
     radar_reports = []
     try:
@@ -199,7 +196,6 @@ def collect_full_intelligence(gc) -> tuple:
     except Exception as e:
         radar_reports.append(f"雷达表读取异常: {e}")
 
-    # --- 提取内部记忆 (前10笔) ---
     try:
         trade_data = sh.worksheet("交易记录").get_all_values()
         valid_trades = [r for r in trade_data[1:] if any(r) and r[0].strip() != ""]
@@ -207,7 +203,6 @@ def collect_full_intelligence(gc) -> tuple:
     except:
         recent_10_trades = ["无数据"]
 
-    # --- 拼装 Markdown ---
     markdown_report = f"""## 🌍 1. 全球宏观水位 (Macro)
 * **10年期美债 (US10Y)**: {macro.get('US10Y', 'N/A')}
 * **比特币 (BTC)**: {macro.get('BTC', 'N/A')}
@@ -228,7 +223,6 @@ def collect_full_intelligence(gc) -> tuple:
     
     markdown_report += """\n
 ## 🧠 4. 账户记忆与底仓状态 (Account Memory)
-* 注意：本账户动态持仓市值已在上方“场内替身”中列出。
 * **可用现金弹药**: 约 4 万。下达雷达狙击指令时需统筹考虑。
 """
     
@@ -239,15 +233,15 @@ def collect_full_intelligence(gc) -> tuple:
     return markdown_report, account_memory_json, rules_str, exec_str
 
 # ==========================================
-# 5. AI 决策中枢 (动态指令注入)
+# 5. AI 决策中枢 (V2.2 客观概率归因版)
 # ==========================================
 def ask_fund_agent(markdown_report: str, account_memory_json: str, rules_str: str, exec_str: str) -> str:
     api_key = os.environ.get("GEMINI_API_KEY")
     client = genai.Client(api_key=api_key)
     
     prompt = f"""
-# Role Definition: V2.0 场外基金量化决策中枢 (Fund Decision Agent)
-你是一个极其锐利、冷酷的量化基金决策大脑。你在下午 14:45 接收数据，输出带有“V2.0 深度逻辑”的精准操作指令。
+# Role Definition: V2.2 场外基金量化决策中枢 (Fund Decision Agent)
+你是一个极其锐利、冷酷的量化基金决策大脑。你在下午 14:45 接收数据，输出精准操作指令。
 
 【输入情报】：
 {markdown_report}
@@ -257,14 +251,14 @@ def ask_fund_agent(markdown_report: str, account_memory_json: str, rules_str: st
 ## 🚫 绝对高压红线 (Strict Enforcements)
 1. **禁止追高**：只要板块大幅高开且维持高位（涨幅>1.5%），必须下达【放弃追高/锁仓】。
 2. **禁止无效摊平**：如果近期已左侧密集收集且达到重仓，处于浮亏也绝对禁止微红/微跌加仓。
-3. **标的强制锁定**：无论结论是否为“不动”，必须在【执行单】中逐一列出下方模板中的所有现役标的。禁止遗漏，禁止推荐非持仓宽基。
+3. **标的强制锁定**：无论结论是否为“不动”，必须在【执行单】中逐一列出下方模板中的所有现役标的。禁止遗漏。
 
 # 🛡️ 现役阵地专属战术纪律 (Dynamic Asset Rules)
 你必须基于传入的数据源与历史记忆，死守以下定制纪律：
 {rules_str}
 
 # Output Format Requirements (严格执行，违者熔断)
-必须给出以下极其冷静、客观的结构化 Markdown，严禁使用“绞杀、死拿、全军”等极端情绪化词汇，必须使用概率化语言：
+必须给出以下极其冷静、客观的结构化 Markdown，严禁使用极端情绪化词汇，必须使用概率化语言：
 
 ### 🌍 [宏观与主线诊断 (14:45)]
 - **全球流动性**：(客观描述宏观数据对风险偏好的影响，如“偏向宽松概率增加”。)
@@ -277,10 +271,9 @@ def ask_fund_agent(markdown_report: str, account_memory_json: str, rules_str: st
 *(说明：在执行单的理由中，必须包含形如：“诱多置信度 70%。[证伪条件]：若连续2日放量站稳前高，则承认趋势反转” 的客观条款。)*
 
 ### 🎯 [雷达池量化监控 (4万备用金)]
-*(对比探测数据与扳机。若无吻合，回复：“未触发高置信度信号，备用金维持风控静默”。若有吻合，给出建仓指令与证伪防线。)*
+*(对比探测数据与扳机。若无吻合，回复：“未触发高置信度信号，备用金维持风控静默”。若有吻合，给出建仓指令与防线。)*
+    """
     
-    # 🎯 切换为最强推理模型 gemini-3.1-pro-preview
-    # 配合 temperature=0.1，输出极其精准、不发散
     response = client.models.generate_content(
         model='gemini-3.1-pro-preview',
         contents=prompt,
@@ -302,10 +295,35 @@ def update_google_sheet(gc, full_log_text: str):
     ws.append_row([today_str, full_log_text])
 
 # ==========================================
+# 7. 🎯 企微群机器人推送
+# ==========================================
+def send_wechat_robot(content: str):
+    robot_key = os.environ.get("WECHAT_ROBOT_KEY")
+    if not robot_key:
+        print("⚠️ 未配置 WECHAT_ROBOT_KEY，跳过企业微信推送。")
+        return
+        
+    url = f"https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key={robot_key}"
+    payload = {
+        "msgtype": "markdown",
+        "markdown": {
+            "content": f"<font color=\"warning\">**🚀 V2.2 盘中量化决策已生成 (14:45)**</font>\n\n{content}"
+        }
+    }
+    try:
+        res = requests.post(url, json=payload)
+        if res.json().get("errcode") == 0:
+            print("📡 企业微信盘中决策推送成功！")
+        else:
+            print(f"❌ 企业微信推送失败: {res.json()}")
+    except Exception as e:
+        print(f"❌ 微信推送网络异常: {e}")
+
+# ==========================================
 # Workflow 主入口
 # ==========================================
 if __name__ == "__main__":
-    print("🚀 [Workflow Start] 启动 V2.0 深潜雷达全息量化引擎...")
+    print("🚀 [Workflow Start] 启动 V2.2 盘中量化决策引擎...")
     try:
         gc = get_gspread_client()
         
@@ -315,14 +333,19 @@ if __name__ == "__main__":
         print(md_report)
         print("="*50 + "\n")
         
-        print(f"⏳ 正在唤醒受高压线约束的 AI Agent (gemini-3.1-pro-preview)...")
+        print(f"⏳ 正在唤醒量化决策大脑 (gemini-3.1-pro-preview)...")
         decision = ask_fund_agent(md_report, memory_json, rules_str, exec_str)
         print("✅ AI 决策完成。")
         
         full_log_text = f"{md_report}\n\n{'='*40}\n\n{decision}"
+        
+        print("⏳ 正在写入 Google Sheet...")
         update_google_sheet(gc, full_log_text)
         
-        print("🎉 [Success] V2.0 雷达任务执行成功！")
+        print("⏳ 正在推送企业微信战报...")
+        send_wechat_robot(decision)  # 🎯 仅推送最核心的 decision 结果给微信
+        
+        print("🎉 [Success] V2.2 盘中任务执行成功！")
         
     except Exception as e:
         print(f"❌ [Failed] 报错信息: {e}")
