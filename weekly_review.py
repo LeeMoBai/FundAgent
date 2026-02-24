@@ -73,48 +73,49 @@ Output Format:
 (根据 5 日序列中 US10Y、BTC、DXY 的走势，为下周的 A股/半导体 定调，并给出下周的重点防线提示。)
 """
 
-print("   [+] 正在吞噬并计算本周海量 JSON 数据...")
-response = client.models.generate_content(
-    model='gemini-3.1-pro-preview', 
-    contents=prompt, 
-    config=genai.types.GenerateContentConfig(temperature=0.2) # 复盘需要稍微发散一点思维，温度设为 0.2
-)
-return response.text
-#==========================================
-3. 企微推送
-#==========================================
+    print("   [+] 正在吞噬并计算本周海量 JSON 数据...")
+    response = client.models.generate_content(
+        model='gemini-3.1-pro-preview', 
+        contents=prompt, 
+        config=genai.types.GenerateContentConfig(temperature=0.2) # 复盘需要稍微发散一点思维，温度设为 0.2
+    )
+    return response.text
+
+# ==========================================
+# 3. 企微推送
+# ==========================================
 def send_wechat_weekly_report(content: str):
-robot_key = os.environ.get("WECHAT_ROBOT_KEY")
-if not robot_key:
-print("⚠️ 未配置 WECHAT_ROBOT_KEY。")
-return
+    robot_key = os.environ.get("WECHAT_ROBOT_KEY")
+    if not robot_key:
+        print("⚠️ 未配置 WECHAT_ROBOT_KEY。")
+        return
 
-payload = {
-    "msgtype": "markdown", 
-    "markdown": {
-        "content": f"<font color='warning'>**👑 V4.0 周度量化体检报告**</font>\n\n{content}"
+    payload = {
+        "msgtype": "markdown", 
+        "markdown": {
+            "content": f"<font color='warning'>**👑 V4.0 周度量化体检报告**</font>\n\n{content}"
+        }
     }
-}
-try:
-    url = f"https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key={robot_key}"
-    requests.post(url, json=payload)
-    print("📡 周度复盘报告企微推送成功！")
-except Exception as e:
-    print(f"❌ 企微推送异常: {e}")
-#==========================================
-主流程
-#==========================================
-if name == "main":
-print("🚀 [V4.0 Weekend Review] 启动周末复盘大脑...")
-try:
-json_data = gather_weekly_json_logs()
-print(f"📦 成功捞取本周 JSON 数据片段，准备分析...")
+    try:
+        url = f"https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key={robot_key}"
+        requests.post(url, json=payload)
+        print("📡 周度复盘报告企微推送成功！")
+    except Exception as e:
+        print(f"❌ 企微推送异常: {e}")
 
-    review_report = ask_v4_review_agent(json_data)
-    send_wechat_weekly_report(review_report)
-    
-    print("🎉 V4.0 周末复盘执行完毕！")
-except Exception as e:
-    print(f"❌ 运行失败: {e}")
-    raise e
+# ==========================================
+# 主流程
+# ==========================================
+if __name__ == "__main__":  # 修复点：添加双下划线
+    print("🚀 [V4.0 Weekend Review] 启动周末复盘大脑...")
+    try:
+        json_data = gather_weekly_json_logs()
+        print(f"📦 成功捞取本周 JSON 数据片段，准备分析...")
 
+        review_report = ask_v4_review_agent(json_data)
+        send_wechat_weekly_report(review_report)
+        
+        print("🎉 V4.0 周末复盘执行完毕！")
+    except Exception as e:
+        print(f"❌ 运行失败: {e}")
+        raise e
