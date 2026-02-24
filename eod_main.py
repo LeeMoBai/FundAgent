@@ -91,7 +91,7 @@ def calculate_eod_pnl(gc) -> str:
     return markdown_report
 
 # ==========================================
-# 1.5 读取今日实际执行的交易动作 (格式完美兼容版)
+# 1.5 读取今日实际执行的交易动作
 # ==========================================
 def get_todays_trades(gc) -> str:
     try:
@@ -101,15 +101,13 @@ def get_todays_trades(gc) -> str:
         tz_bj = pytz.timezone('Asia/Shanghai')
         now = datetime.datetime.now(tz_bj)
         
-        # 🎯 核心修复：兼容你所有可能的日期书写习惯
-        format_1 = now.strftime('%Y-%m-%d')           # 2026-02-24
-        format_2 = f"{now.year}/{now.month}/{now.day}" # 2026/2/24
-        format_3 = now.strftime('%Y/%m/%d')           # 2026/02/24
+        format_1 = now.strftime('%Y-%m-%d')
+        format_2 = f"{now.year}/{now.month}/{now.day}"
+        format_3 = now.strftime('%Y/%m/%d')
         
         todays_trades = []
         for row in trade_data[1:]:
             if not row or not row[0].strip(): continue
-            # 只要包含这三种格式中的任何一种，统统抓取
             if format_1 in row[0] or format_2 in row[0] or format_3 in row[0]:
                 todays_trades.append(row)
         
@@ -122,13 +120,14 @@ def get_todays_trades(gc) -> str:
         return f"交易记录读取异常: {e}"
 
 # ==========================================
-# 2. AI 盘后归因 (V2.3 极度冷酷审计版)
+# 2. AI 盘后归因 (V2.3 极致冷酷审计版 - 剔除点位幻觉)
 # ==========================================
 def ask_eod_agent(markdown_report: str, todays_trades: str) -> str:
     api_key = os.environ.get("GEMINI_API_KEY")
     client = genai.Client(api_key=api_key)
     
-   prompt = f"""
+    # 🎯 这里的缩进必须严格对齐
+    prompt = f"""
 # Role Definition: V2.3 晚间归因与风控审计师 (EOD Quant Auditor)
 当前时间是 22:30，你负责对今日真实净值进行冷酷复盘。
 
@@ -148,15 +147,15 @@ def ask_eod_agent(markdown_report: str, todays_trades: str) -> str:
 请根据以下结构，给出极其精炼的复盘：
 
 ### 🌙 [22:30 晚间审计与策略校准]
-- **今日动作审计**：(基于【今日实际交易动作】进行冷酷审计。分析该动作是否符合长期逻辑，规避了多少回撤风险，或是否存在逻辑偏离。使用概率置信度。)
-- **板块归因探因**：(穿透表面涨跌，分析全球宏观、科技巨头资本开支、韩国KOSPI映射等深层驱动力。指出当前盈亏是属于 Beta 波动还是 Alpha 逻辑受损。)
-- **明日风控沙盘**：(严禁点位！必须基于【宏观事件】和【逻辑证伪】。例如：关注 2.26 英伟达财报前的预期博弈、美债收益率对创新药的压制。结论只能是：继续锁仓 / 准备左侧接回 / 逻辑证伪观察。设定明确的【逻辑证伪条件】。)
+- **今日动作审计**：(基于【今日实际交易动作】进行冷酷审计。分析该动作是否符合长期逻辑，规避了多少回撤风险。使用概率置信度。)
+- **板块归因探因**：(穿透表面涨跌，分析全球宏观、科技巨头资本开支、韩国KOSPI映射等深层驱动力。)
+- **明日风控沙盘**：(严禁点位！必须基于【宏观事件】和【逻辑证伪】。结论只能是：继续锁仓 / 准备左侧接回 / 逻辑证伪观察。设定明确的【逻辑证伪条件】。)
     """
     
     response = client.models.generate_content(
         model='gemini-3.1-pro-preview',
         contents=prompt,
-        config=genai.types.GenerateContentConfig(temperature=0.1) # 压制所有发散性
+        config=genai.types.GenerateContentConfig(temperature=0.1)
     )
     return f"{markdown_report}\n\n{'='*40}\n\n{response.text}"
 
@@ -200,14 +199,14 @@ if __name__ == "__main__":
         todays_trades = get_todays_trades(gc)
         print(f"   [今日动作]: \n{todays_trades}")
         
-        print("⏳ [3/4] 正在唤醒量化审计师 (gemini-3.1-pro-preview)...")
+        print("⏳ [3/4] 正在唤醒审计大脑 (gemini-3.1-pro-preview)...")
         final_log = ask_eod_agent(report, todays_trades)
         print("✅ 归因分析完成。")
         
         print("⏳ [4/4] 正在写入 Google Sheet (C列)...")
         write_to_column_c(gc, final_log)
         
-        print("🎉 [Success] 盘后清算执行成功！")
+        print("🎉 [Success] 盘后清算任务执行成功！")
         
     except Exception as e:
         print(f"❌ [Failed] 报错信息: {e}")
