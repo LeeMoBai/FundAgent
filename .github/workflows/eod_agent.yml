@@ -2,9 +2,9 @@ name: 22:30 EOD Fund Settlement
 
 on:
   schedule:
-    # UTC 14:32 = 北京时间 22:32。避开整点，预留 2 分钟排队时间
+    # UTC 13:32 = 北京时间 21:32。避开整点，预留 2 分钟排队时间
     # 1-5 代表周一到周五运行
-    - cron: '32 14 * * 1-5'
+    - cron: '32 13 * * 1-5'
   workflow_dispatch: 
 
 jobs:
