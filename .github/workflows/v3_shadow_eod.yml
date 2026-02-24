@@ -1,0 +1,42 @@
+name: V3.0 Shadow EOD Run
+
+on:
+  schedule:
+    # 每天北京时间 22:35 (UTC 14:35) 触发
+    - cron: '35 14 * * 1-5'  
+  workflow_dispatch:
+
+permissions:
+  contents: write  
+
+jobs:
+  run-v3-eod-shadow:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v3
+      
+      - name: Set up Python 3.10
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+          
+      - name: Install dependencies
+        run: |
+          pip install gspread akshare google-genai pytz requests
+          
+      - name: Run V3 EOD Engine (Python)
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GCP_SERVICE_ACCOUNT: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+          WECHAT_ROBOT_KEY: ${{ secrets.WECHAT_ROBOT_KEY }}
+        run: |
+          python eod_main_v3.py
+          
+      - name: Commit and Push EOD JSON to GitHub
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "V3 Bot"
+          git add logs/
+          git commit -m "📦 Auto-archive V3 EOD Strategic JSON" || echo "No changes to commit"
+          git push
