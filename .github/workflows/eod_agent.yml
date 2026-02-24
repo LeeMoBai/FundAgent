@@ -1,0 +1,32 @@
+name: 22:30 EOD Fund Settlement
+
+on:
+  schedule:
+    # UTC 14:32 = 北京时间 22:32。避开整点，预留 2 分钟排队时间
+    # 1-5 代表周一到周五运行
+    - cron: '32 14 * * 1-5'
+  workflow_dispatch: 
+
+jobs:
+  run-eod-agent:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          
+      - name: Run EOD Script
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GCP_SERVICE_ACCOUNT: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+        run: |
+          # 注意这里运行的是 eod_main.py
+          python eod_main.py
