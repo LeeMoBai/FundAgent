@@ -1,0 +1,31 @@
+```yaml
+name: V4.0 Weekly Review
+
+on:
+  schedule:
+    # 设定在每周六的北京时间 10:00 (UTC 02:00) 运行
+    - cron: '0 2 * * 6'
+  workflow_dispatch:
+
+jobs:
+  run-v4-weekly-review:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v3
+      
+      - name: Set up Python 3.10
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+          
+      - name: Install dependencies
+        run: |
+          pip install google-genai pytz requests
+          
+      - name: Run Weekly Review Engine
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          WECHAT_ROBOT_KEY: ${{ secrets.WECHAT_ROBOT_KEY }}
+        run: |
+          python weekly_review.py
