@@ -80,9 +80,9 @@ response = client.models.generate_content(
     config=genai.types.GenerateContentConfig(temperature=0.2) # 复盘需要稍微发散一点思维，温度设为 0.2
 )
 return response.text
-==========================================
+#==========================================
 3. 企微推送
-==========================================
+#==========================================
 def send_wechat_weekly_report(content: str):
 robot_key = os.environ.get("WECHAT_ROBOT_KEY")
 if not robot_key:
@@ -101,9 +101,9 @@ try:
     print("📡 周度复盘报告企微推送成功！")
 except Exception as e:
     print(f"❌ 企微推送异常: {e}")
-==========================================
+#==========================================
 主流程
-==========================================
+#==========================================
 if name == "main":
 print("🚀 [V4.0 Weekend Review] 启动周末复盘大脑...")
 try:
