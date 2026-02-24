@@ -122,7 +122,7 @@ def ask_eod_agent(markdown_report: str) -> str:
     """
     
     response = client.models.generate_content(
-        model='gemini-1.5-pro',
+        model='gemini-3.1-pro-preview',
         contents=prompt,
         config=genai.types.GenerateContentConfig(temperature=0.2)
     )
