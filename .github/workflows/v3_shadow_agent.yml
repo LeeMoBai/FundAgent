@@ -1,0 +1,45 @@
+name: V3.0 Shadow Midday Run
+
+on:
+  schedule:
+    # 每天北京时间 14:35 (UTC 06:35) 触发，避开整点拥堵
+    - cron: '35 5 * * 1-5'  
+  # 允许你在网页上随时手动点击运行测试
+  workflow_dispatch:
+
+# 赋予 GitHub Action 往你的仓库里写文件并提交的最高权限
+permissions:
+  contents: write  
+
+jobs:
+  run-v3-shadow:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v3
+      
+      - name: Set up Python 3.10
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+          
+      - name: Install dependencies
+        run: |
+          pip install gspread akshare yfinance google-genai pandas pytz requests
+          
+      - name: Run V3 Engine (Python)
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GCP_SERVICE_ACCOUNT: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+          WECHAT_ROBOT_KEY: ${{ secrets.WECHAT_ROBOT_KEY }}
+        run: |
+          python main_v3.py
+          
+      - name: Commit and Push Strategic JSON to GitHub
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "V3 Bot"
+          git add logs/
+          # 如果 logs 文件夹里有新生成的 json 文件，就会自动打包提交
+          git commit -m "📦 Auto-archive V3 Strategic JSON" || echo "No changes to commit"
+          git push
