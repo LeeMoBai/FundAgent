@@ -29,7 +29,6 @@ def calculate_eod_pnl(gc) -> str:
         return next((i for i, h in enumerate(headers) if kw in h), -1)
     
     idx_name = get_col_idx("基金名称")
-    # 兼容"基金代码"或"替身代码"列名
     idx_fund_code = get_col_idx("基金代码") if get_col_idx("基金代码") != -1 else get_col_idx("替身代码")
     idx_shares = get_col_idx("持有份额")
     idx_nav = get_col_idx("最新净值")
@@ -65,7 +64,6 @@ def calculate_eod_pnl(gc) -> str:
         profit_str = "¥0.00"
         
         try:
-            # 🎯 修复版的正确 API 调用
             nav_df = ak.fund_open_fund_info_em(symbol=fund_code, indicator="单位净值走势")
             if not nav_df.empty:
                 last_record = nav_df.iloc[-1]
@@ -93,7 +91,7 @@ def calculate_eod_pnl(gc) -> str:
     return markdown_report
 
 # ==========================================
-# 1.5 新增：读取今日实际执行的交易动作
+# 1.5 读取今日实际执行的交易动作 (格式完美兼容版)
 # ==========================================
 def get_todays_trades(gc) -> str:
     try:
@@ -101,31 +99,39 @@ def get_todays_trades(gc) -> str:
         trade_data = sh.worksheet("交易记录").get_all_values()
         
         tz_bj = pytz.timezone('Asia/Shanghai')
-        today_str = datetime.datetime.now(tz_bj).strftime('%Y-%m-%d')
+        now = datetime.datetime.now(tz_bj)
         
-        # 遍历交易记录，只挑出日期包含“今天”的行
-        todays_trades = [row for row in trade_data[1:] if any(row) and today_str in row[0]]
+        # 🎯 核心修复：兼容你所有可能的日期书写习惯
+        format_1 = now.strftime('%Y-%m-%d')           # 2026-02-24
+        format_2 = f"{now.year}/{now.month}/{now.day}" # 2026/2/24
+        format_3 = now.strftime('%Y/%m/%d')           # 2026/02/24
+        
+        todays_trades = []
+        for row in trade_data[1:]:
+            if not row or not row[0].strip(): continue
+            # 只要包含这三种格式中的任何一种，统统抓取
+            if format_1 in row[0] or format_2 in row[0] or format_3 in row[0]:
+                todays_trades.append(row)
         
         if todays_trades:
             trades_str = "\n".join([f"- 动作: " + " | ".join(row[1:]) for row in todays_trades])
             return trades_str
         else:
-            return "今日严格按纪律防守，全军静默，无任何买卖操作。"
+            return "今日无任何买卖操作记录。"
     except Exception as e:
         return f"交易记录读取异常: {e}"
 
 # ==========================================
-# 2. AI 盘后归因 (The EOD Brain 升级版)
+# 2. AI 盘后归因 (V2.3 极度冷酷审计版)
 # ==========================================
 def ask_eod_agent(markdown_report: str, todays_trades: str) -> str:
     api_key = os.environ.get("GEMINI_API_KEY")
     client = genai.Client(api_key=api_key)
     
     prompt = f"""
-# Role Definition: V2.2 盘后归因分析师 (EOD Quant Analyst)
-当前时间是 22:30，A股场外基金已公布真实净值。请你基于下方的【今日真实清算单】和主人的【今日实际交易动作】，进行冷酷且具备极高情绪价值的盘后复盘。
-
-请务必结合全球宏观市场（如韩国股市、比特币流动性）以及科技巨头财报细节（如资本开支流向）、资金高低切换逻辑进行深度归因分析，不要只看表面涨跌。
+# Role Definition: V2.3 盘后归因审计师 (EOD Quant Auditor)
+当前时间是 22:30，A股场外基金已公布真实净值。请你基于下方的【今日真实清算单】和【今日实际交易动作】，进行绝对客观、冷酷的量化归因。
+禁止任何情绪化的赞美、批评或拟人化语气。必须结合宏观流动性（如美债、加密货币、韩国股市映射）、巨头资本开支逻辑及资金高低切换特征，使用概率化语言（如“置信度”）进行深度解析。
 
 【今日结算数据】：
 {markdown_report}
@@ -134,19 +140,18 @@ def ask_eod_agent(markdown_report: str, todays_trades: str) -> str:
 {todays_trades}
 
 # Output Format Requirements (严格格式)
-必须给出以下极简的结构化 Markdown 响应，必须包含概率化思维与防守纪律：
+必须给出以下极简的结构化 Markdown 响应：
 
 ### 🌙 [22:30 盘后清算与归因]
-- **执行力点评**：(结合【今日实际交易动作】进行深度点评。如果今天卖出了诱多资产，给予极大肯定；如果管住了手，赞赏定力。分析逻辑必须客观，采用概率化语言，如“置信度”。)
-- **账单总结**：(一句话总结今日总盈亏金额，指出盈亏的核心驱动力，如科技资本开支缩减或宏观流动性变化。)
-- **明日沙盘**：(一句话指明明日的核心监控指标，设定并写明证伪条件。)
+- **交易动作审计**：(基于【今日实际交易动作】进行冷酷审计。如果今天有买卖，分析该动作在今日收盘量价下的合理性，判断置信度；如果无动作，评估静默持仓在今日宏观局势下的沉没成本或防御效率。必须使用定量和概率化语言。)
+- **盈亏驱动归因**：(一句话总结今日总盈亏金额，并精准指出利润/亏损的核心宏观或板块驱动力。)
+- **明日风控推演**：(一句话指明明日的核心监控指标，必须设定明确的【证伪条件】或【离场/建仓阈值】。)
     """
     
-    # 🎯 采用最强 3.1 预览版模型
     response = client.models.generate_content(
         model='gemini-3.1-pro-preview',
         contents=prompt,
-        config=genai.types.GenerateContentConfig(temperature=0.2)
+        config=genai.types.GenerateContentConfig(temperature=0.1) # 压制所有发散性
     )
     return f"{markdown_report}\n\n{'='*40}\n\n{response.text}"
 
@@ -178,7 +183,7 @@ def write_to_column_c(gc, final_report: str):
 # Workflow 主入口
 # ==========================================
 if __name__ == "__main__":
-    print("🚀 [EOD Start] 启动 V2.2 盘后清算引擎...")
+    print("🚀 [EOD Start] 启动 V2.3 盘后清算与审计引擎...")
     try:
         gc = get_gspread_client()
         
@@ -190,14 +195,14 @@ if __name__ == "__main__":
         todays_trades = get_todays_trades(gc)
         print(f"   [今日动作]: \n{todays_trades}")
         
-        print("⏳ [3/4] 正在唤醒归因大脑 (gemini-3.1-pro-preview)...")
+        print("⏳ [3/4] 正在唤醒量化审计师 (gemini-3.1-pro-preview)...")
         final_log = ask_eod_agent(report, todays_trades)
         print("✅ 归因分析完成。")
         
         print("⏳ [4/4] 正在写入 Google Sheet (C列)...")
         write_to_column_c(gc, final_log)
         
-        print("🎉 [Success] 盘后清算执行成功，晚安！")
+        print("🎉 [Success] 盘后清算执行成功！")
         
     except Exception as e:
         print(f"❌ [Failed] 报错信息: {e}")
