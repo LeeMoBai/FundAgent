@@ -65,9 +65,9 @@ def calculate_eod_pnl(gc) -> tuple:
         daily_pct = "0.00"
         profit_str = "¥0.00"
         
-        try:
-            # 获取该场外基金的净值历史
-            nav_df = ak.fund_em_open_fund_info(fund=fund_code, indicator="单位净值走势")
+       try:
+            # 🎯 核心修复：更正 AkShare 的正确函数名和 symbol 参数
+            nav_df = ak.fund_open_fund_info_em(symbol=fund_code, indicator="单位净值走势")
             if not nav_df.empty:
                 last_record = nav_df.iloc[-1]
                 real_nav = last_record['单位净值']
