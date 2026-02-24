@@ -6,6 +6,7 @@ import gspread
 import akshare as ak
 from google import genai
 import re
+import requests  # 🎯 新增：用于发送企业微信请求
 
 # ==========================================
 # 0. 认证初始化
@@ -91,7 +92,7 @@ def calculate_eod_pnl(gc) -> str:
     return markdown_report
 
 # ==========================================
-# 1.5 读取今日实际执行的交易动作
+# 1.5 读取今日实际执行的交易动作 (极简兼容版)
 # ==========================================
 def get_todays_trades(gc) -> str:
     try:
@@ -101,6 +102,7 @@ def get_todays_trades(gc) -> str:
         tz_bj = pytz.timezone('Asia/Shanghai')
         now = datetime.datetime.now(tz_bj)
         
+        # 精准匹配你的 2026/02/24 习惯，不搞暴力替换
         format_1 = now.strftime('%Y-%m-%d')
         format_2 = f"{now.year}/{now.month}/{now.day}"
         format_3 = now.strftime('%Y/%m/%d')
@@ -126,7 +128,6 @@ def ask_eod_agent(markdown_report: str, todays_trades: str) -> str:
     api_key = os.environ.get("GEMINI_API_KEY")
     client = genai.Client(api_key=api_key)
     
-    # 🎯 这里的缩进必须严格对齐
     prompt = f"""
 # Role Definition: V2.3 晚间归因与风控审计师 (EOD Quant Auditor)
 当前时间是 22:30，你负责对今日真实净值进行冷酷复盘。
@@ -184,6 +185,31 @@ def write_to_column_c(gc, final_report: str):
         ws.append_row([datetime.datetime.now(tz_bj).strftime('%Y-%m-%d %H:%M'), "白天未执行", final_report])
 
 # ==========================================
+# 4. 🎯 新增：企业微信 Markdown 推送
+# ==========================================
+def send_wechat_robot(content: str):
+    robot_key = os.environ.get("WECHAT_ROBOT_KEY")
+    if not robot_key:
+        print("⚠️ 未配置 WECHAT_ROBOT_KEY，跳过企业微信推送。")
+        return
+        
+    url = f"https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key={robot_key}"
+    payload = {
+        "msgtype": "markdown",
+        "markdown": {
+            "content": f"<font color=\"info\">**V2.3 晚间审计战报已送达**</font>\n\n{content}"
+        }
+    }
+    try:
+        res = requests.post(url, json=payload)
+        if res.json().get("errcode") == 0:
+            print("📡 企业微信推送成功！")
+        else:
+            print(f"❌ 企业微信推送失败: {res.json()}")
+    except Exception as e:
+        print(f"❌ 微信推送网络异常: {e}")
+
+# ==========================================
 # Workflow 主入口
 # ==========================================
 if __name__ == "__main__":
@@ -191,20 +217,23 @@ if __name__ == "__main__":
     try:
         gc = get_gspread_client()
         
-        print("⏳ [1/4] 正在拉取真实净值并计算盈亏...")
+        print("⏳ [1/5] 正在拉取真实净值并计算盈亏...")
         report = calculate_eod_pnl(gc)
         print(report)
         
-        print("⏳ [2/4] 正在读取今日实际交易动作...")
+        print("⏳ [2/5] 正在读取今日实际交易动作...")
         todays_trades = get_todays_trades(gc)
         print(f"   [今日动作]: \n{todays_trades}")
         
-        print("⏳ [3/4] 正在唤醒审计大脑 (gemini-3.1-pro-preview)...")
+        print("⏳ [3/5] 正在唤醒审计大脑 (gemini-3.1-pro-preview)...")
         final_log = ask_eod_agent(report, todays_trades)
         print("✅ 归因分析完成。")
         
-        print("⏳ [4/4] 正在写入 Google Sheet (C列)...")
+        print("⏳ [4/5] 正在写入 Google Sheet (C列)...")
         write_to_column_c(gc, final_log)
+        
+        print("⏳ [5/5] 正在向企业微信发送战报...")
+        send_wechat_robot(final_log)
         
         print("🎉 [Success] 盘后清算任务执行成功！")
         
