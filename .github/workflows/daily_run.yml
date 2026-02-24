@@ -28,5 +28,6 @@ jobs:
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           GCP_SERVICE_ACCOUNT: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+          WECHAT_ROBOT_KEY: ${{ secrets.WECHAT_ROBOT_KEY }}  # 👈 务必加上这行！
         run: |
           python main.py
