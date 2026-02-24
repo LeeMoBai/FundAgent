@@ -33,7 +33,7 @@ def get_macro_v3() -> tuple:
         "XAU_USD": "GC=F", 
         "NQmain": "NQ=F", 
         "XBI": "XBI",
-        "DXY": "DX-Y.NYB"  # 🎯 V3.0 新增美元指数
+        "DXY": "DX-Y.NYB"  
     }
     
     for key, symbol in tickers.items():
@@ -45,12 +45,10 @@ def get_macro_v3() -> tuple:
                 prev_close = closes[-2]
                 pct_chg = ((current - prev_close) / prev_close) * 100
                 
-                # 🔴 Tactical (给 AI 和微信看的：极简当前切片)
                 if key == "BTC": tactical_macro[key] = f"${current:,.0f} ({pct_chg:+.2f}%)"
                 elif key == "XAU_USD": tactical_macro[key] = f"${current:,.2f} ({pct_chg:+.2f}%)"
                 else: tactical_macro[key] = f"{current:.3f} ({pct_chg:+.2f}%)"
                 
-                # 🔵 Strategic (存入 JSON 的：完整 5 日序列)
                 strategic_macro[key] = {
                     "current": current,
                     "daily_pct": pct_chg,
@@ -79,7 +77,7 @@ def get_etf_5d_features(proxy_code: str) -> dict:
     try:
         hist_df = ak.fund_etf_hist_em(symbol=proxy_code, period="daily")
         if len(hist_df) >= 2:
-            recent_5 = hist_df.tail(6) # 取6天为了算5个量比
+            recent_5 = hist_df.tail(6) 
             vols = recent_5['成交额'].tolist()
             prices = recent_5['收盘'].tolist()
             
@@ -91,7 +89,6 @@ def get_etf_5d_features(proxy_code: str) -> dict:
             features["5d_prices"] = prices[1:]
             features["5d_vol_ratios"] = ratios
             
-            # 判断今天是否异动 (量比 > 1.2 或 < 0.8)
             today_ratio = ratios[-1]
             if today_ratio > 1.2:
                 features["is_abnormal_vol"] = True
@@ -124,19 +121,16 @@ def collect_v3_intelligence(gc) -> tuple:
     headers = dash_data[0]
     def get_idx(kw): return next((i for i, h in enumerate(headers) if kw in h), -1)
     
-    # 战略级 JSON 底稿容器
     strategic_archive = {
         "macro_matrix": strat_macro,
         "active_positions": [],
         "radar_graveyard": []
     }
     
-    # 战术级 Markdown 容器
     tactical_etfs = []
     tactical_rules = []
     exec_template = []
 
-    # 1. 处理现役持仓
     for row in dash_data[1:]:
         if not row or not str(row[0]).strip().isdigit(): continue
         name = row[get_idx("基金名称")]
@@ -153,10 +147,8 @@ def collect_v3_intelligence(gc) -> tuple:
                 pct = match.iloc[0]['涨跌幅']
                 features = get_etf_5d_features(proxy)
                 
-                # 🔴 战术级：只给当前切片
                 tactical_etfs.append(f"* **{name}**: 盘中 {pct:+.2f}% | 量价: [{features['tactical_desc']}]")
                 
-                # 🔵 战略级：记录连续动作
                 strategic_archive["active_positions"].append({
                     "name": name,
                     "proxy": proxy,
@@ -166,7 +158,6 @@ def collect_v3_intelligence(gc) -> tuple:
                     "rule_active": rule
                 })
 
-    # 2. 处理雷达池 (动态隐身逻辑)
     print("   [+] 扫描雷达池 (触发过滤机制)...")
     tactical_radar = []
     try:
@@ -186,13 +177,11 @@ def collect_v3_intelligence(gc) -> tuple:
                     pct = match.iloc[0]['涨跌幅']
                     features = get_etf_5d_features(r_proxy)
                     
-                    # 🔴 战术级过滤：只有大跌(<-1%)、距年线近(<3%)或异动放量，才送去给AI看。没触发的彻底静默！
                     is_triggered = pct < -1.0 or abs(features["ma250_dist"]) < 3.0 or features["is_abnormal_vol"]
                     
                     if is_triggered:
                         tactical_radar.append(f"* **{r_name}**: 盘中 {pct:+.2f}% | {features['tactical_desc']} | 🎯 扳机: {r_trigger}")
                     
-                    # 🔵 战略级：全量打入雷达坟场，留给月度复盘算踏空成本
                     strategic_archive["radar_graveyard"].append({
                         "name": r_name,
                         "today_pct": pct,
@@ -202,17 +191,24 @@ def collect_v3_intelligence(gc) -> tuple:
                     })
     except: pass
 
-    # 组装极简 Prompt
+    # 🎯 修复点：在外面完成 \n.join 的拼接，绝对不把它放进 f-string 里
+    etfs_str = "\n".join(tactical_etfs)
+    radar_str = "\n".join(tactical_radar) if tactical_radar else "全量安全，无资产触发预警。静默。"
+    
     md_prompt = f"""## 🌍 1. 核心宏观锚点
 US10Y: {tac_macro.get('US10Y')} | BTC: {tac_macro.get('BTC')} | KOSPI: {tac_macro.get('KOSPI')} | NQmain: {tac_macro.get('NQmain')}
 
 ## 🎯 2. 现役阵地切片
-{"\n".join(tactical_etfs)}
+{etfs_str}
 
 ## 📡 3. 异动雷达 (仅显示疑似触发标的)
-{"\n".join(tactical_radar) if tactical_radar else "全量安全，无资产触发预警。静默。"}
+{radar_str}
 """
-    return md_prompt, "\n".join(tactical_rules), "\n".join(exec_template), strategic_archive
+    # 同理，这里的 join 也在外面做，保证绝对安全
+    rules_out = "\n".join(tactical_rules)
+    exec_out = "\n".join(exec_template)
+    
+    return md_prompt, rules_out, exec_out, strategic_archive
 
 # ==========================================
 # 4. AI 极简战术大脑
@@ -236,11 +232,12 @@ def ask_v3_tactical_agent(md_prompt: str, rules_str: str, exec_str: str) -> str:
 ### 🎯 [雷达池动作]
 (如果有触发，明确买入指令；如显示静默，则回复“雷达区无警报，备用金静默”。)
     """
-    return client.models.generate_content(
+    response = client.models.generate_content(
         model='gemini-3.1-pro-preview', 
         contents=prompt, 
         config=genai.types.GenerateContentConfig(temperature=0.1)
-    ).text
+    )
+    return response.text
 
 # ==========================================
 # 5. 落盘归档与企微推送
@@ -250,8 +247,8 @@ def archive_and_notify(ai_decision: str, strategic_json: dict):
     now = datetime.datetime.now(tz_bj)
     time_prefix = now.strftime('%Y-%m-%d_%H%M')
     
-    # 1. 写入战略级 JSON
-    strategic_json["ai_tactical_decision"] = ai_decision  # 把 AI 的判决也一并存入底稿
+    strategic_json["ai_tactical_decision"] = ai_decision  
+    
     os.makedirs("logs", exist_ok=True)
     json_path = f"logs/{time_prefix}_Strategic.json"
     
@@ -259,26 +256,39 @@ def archive_and_notify(ai_decision: str, strategic_json: dict):
         json.dump(strategic_json, f, ensure_ascii=False, indent=2)
     print(f"📦 战略级 JSON 已入库: {json_path}")
 
-    # 2. 推送企业微信
     robot_key = os.environ.get("WECHAT_ROBOT_KEY")
     if robot_key:
-        payload = {"msgtype": "markdown", "markdown": {"content": f"<font color=\"warning\">**🚀 V3.0 战术决策 (影分身测试)**</font>\n\n{ai_decision}"}}
-        requests.post(f"https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key={robot_key}", json=payload)
-        print("📡 企微推送成功！")
+        # 🎯 修复点：彻底去除反斜杠，改用单引号保证安全
+        payload = {
+            "msgtype": "markdown", 
+            "markdown": {
+                "content": f"<font color='warning'>**🚀 V3.0 战术决策 (影分身测试)**</font>\n\n{ai_decision}"
+            }
+        }
+        try:
+            url = f"https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key={robot_key}"
+            requests.post(url, json=payload)
+            print("📡 企微推送成功！")
+        except Exception as e:
+            print(f"❌ 企微推送网络异常: {e}")
 
 # ==========================================
 # 主流程
 # ==========================================
 if __name__ == "__main__":
     print("🚀 [V3.0 Shadow Run] 启动战术/战略双轨测试引擎...")
-    gc = get_gspread_client()
-    
-    md_prompt, rules_str, exec_str, strategic_json = collect_v3_intelligence(gc)
-    
-    print("⏳ 唤醒战术大脑计算指令...")
-    ai_decision = ask_v3_tactical_agent(md_prompt, rules_str, exec_str)
-    
-    print("⏳ 执行 JSON 落盘与微信分发...")
-    archive_and_notify(ai_decision, strategic_json)
-    
-    print("🎉 V3.0 影子测试运行完毕！")
+    try:
+        gc = get_gspread_client()
+        
+        md_prompt, rules_str, exec_str, strategic_json = collect_v3_intelligence(gc)
+        
+        print("⏳ 唤醒战术大脑计算指令...")
+        ai_decision = ask_v3_tactical_agent(md_prompt, rules_str, exec_str)
+        
+        print("⏳ 执行 JSON 落盘与微信分发...")
+        archive_and_notify(ai_decision, strategic_json)
+        
+        print("🎉 V3.0 影子测试运行完毕！")
+    except Exception as e:
+        print(f"❌ 运行失败: {e}")
+        raise e
