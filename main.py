@@ -24,17 +24,17 @@ def get_gspread_client():
 def get_macro_data() -> dict:
     macro = {}
     tickers = {
-        "US10Y": "^TNX",           # 10年期美债
-        "BTC": "BTC-USD",          # 比特币
-        "KOSPI": "^KS11",          # 韩国KOSPI (半导体先行)
-        "XAU_USD": "GC=F",         # COMEX黄金期货 (国际金价)
-        "NQmain": "NQ=F",          # 纳指100主力期货
-        "XBI": "XBI"               # 美股生物科技 (创新药风向标)
+        "US10Y": "^TNX",           
+        "BTC": "BTC-USD",          
+        "KOSPI": "^KS11",          
+        "XAU_USD": "GC=F",         
+        "NQmain": "NQ=F",          
+        "XBI": "XBI"               
     }
 
     for key, symbol in tickers.items():
         try:
-            # 🎯 核心修复：改为拉取过去 5 天，防止节假日抓不到足够的 K 线
+            # 🎯 拉取过去 5 天，防止周末/节假日抓不到最新K线
             data = yf.Ticker(symbol).history(period="5d")
             if len(data) >= 2:
                 prev_close = data['Close'].iloc[-2]
@@ -60,13 +60,10 @@ def get_macro_data() -> dict:
 # 2. 动态计算量比 (Volume Ratio)
 # ==========================================
 def get_volume_status(proxy_code: str, current_vol_yi: float) -> str:
-    """
-    对比昨日全天成交额，计算量比状态
-    """
     try:
         hist_df = ak.fund_etf_hist_em(symbol=proxy_code, period="daily")
         if len(hist_df) >= 2:
-            yesterday_vol_yi = hist_df.iloc[-2]['成交额'] / 100000000 # 换算为亿
+            yesterday_vol_yi = hist_df.iloc[-2]['成交额'] / 100000000
             if yesterday_vol_yi > 0:
                 ratio = current_vol_yi / yesterday_vol_yi
                 if ratio > 1.2:
@@ -80,181 +77,219 @@ def get_volume_status(proxy_code: str, current_vol_yi: float) -> str:
     return "量比暂无"
 
 # ==========================================
-# 3. 抓取持仓并组装侦察简报
+# 3. 核心：计算年线乖离率与1年水位分位 (雷达专属)
+# ==========================================
+def get_radar_technical_data(proxy_code: str, current_price: float) -> str:
+    try:
+        hist_df = ak.fund_etf_hist_em(symbol=proxy_code, period="daily")
+        if len(hist_df) >= 250:
+            recent_250 = hist_df.tail(250)
+        elif len(hist_df) >= 20:
+            recent_250 = hist_df 
+        else:
+            return "上市过短无数据"
+            
+        ma250 = recent_250['收盘'].mean()
+        ma250_dist = ((current_price - ma250) / ma250) * 100
+        
+        high_250 = recent_250['最高'].max()
+        low_250 = recent_250['最低'].min()
+        
+        if high_250 != low_250:
+            price_percentile = ((current_price - low_250) / (high_250 - low_250)) * 100
+        else:
+            price_percentile = 50.0
+            
+        return f"距年线: {ma250_dist:+.2f}% | 1年绝对水位: {price_percentile:.1f}%"
+    except Exception as e:
+        return f"探测失败"
+
+# ==========================================
+# 4. 抓取持仓与雷达并组装动态简报
 # ==========================================
 def collect_full_intelligence(gc) -> tuple:
     sh = gc.open("基金净值总结")
-    tz_bj = pytz.timezone('Asia/Shanghai')
-    today_time = datetime.datetime.now(tz_bj).strftime('%Y-%m-%d %H:%M')
-    
     macro = get_macro_data()
     
-    print("   [+] 正在拉取全市场 ETF 实时快照及量比计算...")
+    print("   [+] 正在拉取全市场 ETF 实时快照...")
     try:
         etf_spot = ak.fund_etf_spot_em()
     except:
         etf_spot = pd.DataFrame()
 
+    # --- 处理现役底仓 (Dashboard) 并动态组装规则 ---
     ws_dash = sh.worksheet("Dashboard")
     dash_data = ws_dash.get_all_values()
-    headers = dash_data[0]
+    headers_dash = dash_data[0]
     
-    def get_col_idx(kw):
+    def get_col_idx(headers, kw):
         return next((i for i, h in enumerate(headers) if kw in h), -1)
     
-    idx_name, idx_proxy = get_col_idx("基金名称"), get_col_idx("替身代码")
-    idx_shares, idx_nav = get_col_idx("持有份额"), get_col_idx("最新净值")
+    idx_name = get_col_idx(headers_dash, "基金名称")
+    idx_proxy = get_col_idx(headers_dash, "替身代码")
+    idx_shares = get_col_idx(headers_dash, "持有份额")
+    idx_nav = get_col_idx(headers_dash, "最新净值")
+    idx_rule = get_col_idx(headers_dash, "战术纪律") # 🎯 动态战术列
+    
     etf_reports = []
+    dynamic_rules = []
+    dynamic_exec_template = []
     
     for row in dash_data[1:]:
         if not row or not str(row[0]).strip().isdigit(): continue
         name = row[idx_name] if idx_name != -1 else "Unknown"
         proxy_raw = row[idx_proxy].strip() if idx_proxy != -1 else ""
+        proxy = re.search(r'\d{6}', proxy_raw).group(0) if re.search(r'\d{6}', proxy_raw) else ""
         
-        proxy_match = re.search(r'\d{6}', proxy_raw)
-        proxy = proxy_match.group(0) if proxy_match else ""
+        # 🎯 动态组装战术纪律与输出模板
+        rule_text = row[idx_rule].strip() if idx_rule != -1 and len(row) > idx_rule else "结合宏观与量价数据严格执行纪律"
+        if rule_text:
+            dynamic_rules.append(f"- **【{name}】**：{rule_text}")
+        dynamic_exec_template.append(f"- **{name}**：[不动 / 申赎买卖] | ￥[金额] | [30字深度理由：必须紧扣专属纪律]")
         
         position_str = "持仓未知"
         if idx_shares != -1 and idx_nav != -1:
-            shares_raw = row[idx_shares].strip().replace(',', '')
-            nav_raw = row[idx_nav].strip().replace(',', '')
+            shares_raw = re.sub(r'[^\d.]', '', row[idx_shares]) if len(row) > idx_shares else ""
+            nav_raw = re.sub(r'[^\d.]', '', row[idx_nav]) if len(row) > idx_nav else ""
             try:
-                market_value = float(shares_raw) * float(nav_raw)
-                position_str = f"¥{market_value:,.0f}"
+                if shares_raw and nav_raw:
+                    position_str = f"¥{(float(shares_raw) * float(nav_raw)):,.0f}"
+                else:
+                    position_str = "¥0(净值延迟)"
             except:
-                position_str = "¥0"
+                position_str = "¥0(异常)"
 
         if proxy and not etf_spot.empty:
             match = etf_spot[etf_spot["代码"] == proxy]
             if not match.empty:
                 price = match.iloc[0]['最新价']
                 pct = match.iloc[0]['涨跌幅']
-                vol_yi = match.iloc[0]['成交额'] / 100000000
-                vol_status = get_volume_status(proxy, vol_yi)
-                
-                extra_note = ""
-                if proxy in ["513120", "159567"]: 
-                    distance = ((price - 1.33) / 1.33) * 100
-                    status_str = "已到达" if distance <= 0 else "远"
-                    extra_note = f" | 距1.33坑位: [{status_str}，差{distance:+.2f}%]"
-                
-                report_line = f"* **{name} ({proxy})**: 盘中 {pct:+.2f}% | 量价: [{vol_status}] | **当前持仓: {position_str}**{extra_note}"
-                etf_reports.append(report_line)
+                vol_status = get_volume_status(proxy, match.iloc[0]['成交额'] / 100000000)
+                etf_reports.append(f"* **{name} ({proxy})**: 盘中 {pct:+.2f}% | 量价: [{vol_status}] | **当前持仓: {position_str}**")
 
-   # ==============================
-    # 🎯 核心修复：从表格“顶部”读取最新记录
-    # ==============================
+    # --- 处理雷达监控池 (雷达监控) ---
+    print("   [+] 正在启动 V2.0 深潜雷达探测器...")
+    radar_reports = []
     try:
-        history_data = sh.worksheet("History").get_all_values()
-        # History 表前两行是表头，数据从第 3 行开始，且最新日期在最上面
-        valid_history = [r for r in history_data[2:] if any(r) and r[0].strip() != ""]
-        recent_3_days = valid_history[:3] # 切片取最顶部的 3 条
-    except:
-        recent_3_days = ["无数据"]
+        ws_radar = sh.worksheet("雷达监控")
+        radar_data = ws_radar.get_all_values()
+        headers_radar = radar_data[0]
         
+        r_idx_name = get_col_idx(headers_radar, "板块名称")
+        r_idx_proxy = get_col_idx(headers_radar, "替身代码")
+        r_idx_logic = get_col_idx(headers_radar, "核心伏击逻辑")
+        r_idx_trigger = get_col_idx(headers_radar, "狙击触发条件")
+        
+        for row in radar_data[1:]:
+            if not row or not any(row): continue
+            r_name = row[r_idx_name] if r_idx_name != -1 else "Unknown"
+            r_proxy_raw = row[r_idx_proxy] if r_idx_proxy != -1 else ""
+            r_logic = row[r_idx_logic] if r_idx_logic != -1 else "无"
+            r_trigger = row[r_idx_trigger] if r_idx_trigger != -1 else "无"
+            
+            r_proxy = re.search(r'\d{6}', r_proxy_raw).group(0) if re.search(r'\d{6}', r_proxy_raw) else ""
+            
+            if r_proxy and not etf_spot.empty:
+                match = etf_spot[etf_spot["代码"] == r_proxy]
+                if not match.empty:
+                    r_price = match.iloc[0]['最新价']
+                    r_pct = match.iloc[0]['涨跌幅']
+                    tech_str = get_radar_technical_data(r_proxy, float(r_price))
+                    radar_reports.append(f"* **{r_name} ({r_proxy})**: 盘中 {r_pct:+.2f}% | 【估值探测】: {tech_str} \n  * 逻辑: {r_logic} \n  * 🎯 **扳机**: {r_trigger}")
+    except Exception as e:
+        radar_reports.append(f"雷达表读取异常: {e}")
+
+    # --- 提取内部记忆 (前10笔) ---
     try:
         trade_data = sh.worksheet("交易记录").get_all_values()
-        # 交易记录表第 1 行是表头，数据从第 2 行开始，且最新日期在最上面
         valid_trades = [r for r in trade_data[1:] if any(r) and r[0].strip() != ""]
-        recent_5_trades = valid_trades[:5] # 切片取最顶部的 5 条
+        recent_10_trades = valid_trades[:10]
     except:
-        recent_5_trades = ["无数据"]
+        recent_10_trades = ["无数据"]
 
+    # --- 拼装 Markdown ---
     markdown_report = f"""## 🌍 1. 全球宏观水位 (Macro)
 * **10年期美债 (US10Y)**: {macro.get('US10Y', 'N/A')}
 * **比特币 (BTC)**: {macro.get('BTC', 'N/A')}
 * **韩国KOSPI (半导体先行)**: {macro.get('KOSPI', 'N/A')}
-* **国际金价 (XAU/USD)**: {macro.get('XAU_USD', 'N/A')} (替代场内黄金ETF)
+* **国际金价 (XAU/USD)**: {macro.get('XAU_USD', 'N/A')}
 * **纳指100期货 (NQmain)**: {macro.get('NQmain', 'N/A')} 
-* **美股生物科技 (XBI)**: {macro.get('XBI', 'N/A')} (创新药真实风向标)
+* **美股生物科技 (XBI)**: {macro.get('XBI', 'N/A')}
 
 ## 🎯 2. 核心场内替身盘中表现 (ETF Proxies)
 """
     markdown_report += "\n".join(etf_reports)
     
-    # 动态抓取持仓的补充说明
+    markdown_report += "\n\n## 📡 3. V2.0 雷达监控池 (4万备用金狩猎区)\n"
+    if radar_reports:
+        markdown_report += "\n".join(radar_reports)
+    else:
+        markdown_report += "雷达池未配置或为空。"
+    
     markdown_report += """\n
-## 🧠 3. 账户记忆与底仓状态 (Account Memory)
+## 🧠 4. 账户记忆与底仓状态 (Account Memory)
 * 注意：本账户动态持仓市值已在上方“场内替身”中列出。
-* **可用现金弹药**: 约 4 万。下达买入指令时需统筹考虑。
+* **可用现金弹药**: 约 4 万。下达雷达狙击指令时需统筹考虑。
 """
     
-    account_memory_json = json.dumps({
-        "近期3天账户走势": recent_3_days,
-        "最近5笔真实交易记录": recent_5_trades
-    }, ensure_ascii=False)
-
-    return markdown_report, account_memory_json
+    rules_str = "\n".join(dynamic_rules)
+    exec_str = "\n".join(dynamic_exec_template)
+    account_memory_json = json.dumps({"最近10笔真实交易记录": recent_10_trades}, ensure_ascii=False)
+    
+    return markdown_report, account_memory_json, rules_str, exec_str
 
 # ==========================================
-# 4. AI 决策中枢 (加上高压紧箍咒)
+# 5. AI 决策中枢 (动态指令注入)
 # ==========================================
-def ask_fund_agent(markdown_report: str, account_memory_json: str) -> str:
+def ask_fund_agent(markdown_report: str, account_memory_json: str, rules_str: str, exec_str: str) -> str:
     api_key = os.environ.get("GEMINI_API_KEY")
     client = genai.Client(api_key=api_key)
     
     prompt = f"""
 # Role Definition: V2.0 场外基金量化决策中枢 (Fund Decision Agent)
-你是一个极其锐利、冷酷的量化基金决策大脑。你的服务对象是【场外基金】投资者，每天只能以 15:00 的唯一收盘净值成交。你的任务是在每天下午 14:45，接收包含国际前瞻指标、量价数据以及【历史交易记忆】的实时切片，输出带有“V2.0 深度逻辑”的精准操作指令。
+你是一个极其锐利、冷酷的量化基金决策大脑。你在下午 14:45 接收数据，输出带有“V2.0 深度逻辑”的精准操作指令。
 
 【输入情报】：
 {markdown_report}
-
 【内部交易记忆】：
 {account_memory_json}
 
 ## 🚫 绝对高压红线 (Strict Enforcements)
-1. **彻底屏蔽股票思维**：禁止输出“高抛低吸、做T、开盘抢筹、逢高减仓”等废话。
-2. **禁止追高**：只要板块当日大幅高开且维持高位（涨幅>1.5%），场外基金买入即接盘，必须下达【放弃追高/锁仓】指令。
-3. **禁止窄幅止损**：容忍高贝塔波动，禁止因单日 -1% 到 -2% 的技术回踩而恐慌性减仓。
-4. **禁止无效摊平（防锚定）**：必须结合传入的历史交易记忆。如果近期已在左侧密集收集过筹码且达到重仓水位，即使当前处于浮亏，也绝对禁止在微红/微跌日继续加仓，必须强制【静止观望】。
-5. **标的强制锁定**：无论结论是否为“不动”，必须在【执行单】中逐一列出核心 5 大标的（半导体、纳指、创新药、黄金、CPO）。禁止将弹药（现金）推荐给非核心宽基（如 A500 只做观察，不建议买入）。
+1. **禁止追高**：只要板块大幅高开且维持高位（涨幅>1.5%），必须下达【放弃追高/锁仓】。
+2. **禁止无效摊平**：如果近期已左侧密集收集且达到重仓，处于浮亏也绝对禁止微红/微跌加仓。
+3. **标的强制锁定**：无论结论是否为“不动”，必须在【执行单】中逐一列出下方模板中的所有现役标的。禁止遗漏，禁止推荐非持仓宽基。
 
-# V2.0 核心战术锚点 (Hardcoded Asset Rules)
+# 🛡️ 现役阵地专属战术纪律 (Dynamic Asset Rules)
 你必须基于传入的数据源与历史记忆，死守以下定制纪律：
-- **【核心矛】半导体（永赢 015968）**：看 KOSPI、SOXX 及场内量比。重仓利润垫厚，只要逻辑未被海外财报证伪且未见连续放量滞涨，无论震荡多剧烈，一律【死拿锁仓】。
-- **【防守盾】纳斯达克（华宝 017437）**：看 NQmain 及昨夜纳指。日常靠定投。**只有**出现 >-2% 的实质性暴跌时，才触发【手动大额加仓】，否则【不动】。
-- **【伏击圈】港股创新药（广发 019671）**：绝对左侧资产。看 US10Y 走势。美债下行是利好。除非跌至黄金坑，微涨/微跌/高开一律【底仓观望，绝不追高】。
-- **【宏观对冲】黄金（博时 002611）**：必须看国际现货黄金(XAU/USD)与美债。大跌左侧买入，横盘/上涨则锁仓。
-- **【雷区】CPO光模块（中航机遇 018957）**：存在资本开支压价的逻辑硬伤。无论盘中如何反弹均视为诱多，永远【坚决不碰/不补仓】。
+{rules_str}
 
 # Output Format Requirements (严格执行，违者熔断)
-必须在 5 秒内给出以下极简且深刻的结构化 Markdown 响应，严禁自行发明多余层级或寒暄废话：
+必须给出以下极简且深刻的结构化 Markdown，严禁废话：
 
 ### 🌍 [宏观与主线诊断 (14:45)]
-- **全球宏观水位**：(一句话精准描述 KOSPI、BTC、US10Y、XAU/USD的共振关系与流动性状态。)
-- **A股盘面判定**：(一句话刺穿表象，结合ETF量比数据，判定主力资金是吸筹还是派发。)
+- **全球宏观水位**：(一句话精准描述流动性状态)
+- **A股盘面判定**：(结合ETF量比数据，判定主力意图)
 
-### 📓 [交易记忆与纪律校验]
-- **记忆调取**：(简述传入的近期重大加减仓动作与当前仓位水位。)
-- **今日盘面**：(当前核心资产的涨跌状态。)
-- **V2.0 判决**：(基于记忆与盘面的硬性约束，得出操作定调。)
-
-### 🧠 [V2.0 深度推演]
-*(用 2-3 句话，结合宏观数据与上述的【纪律校验】，阐述今日的底层逻辑。)*
-
-### ⚔️ [终极操作指令]
-*(只允许输出以下四种状态之一：【全军静默 (锁仓不动)】 / 【左侧狙击 (大跌买入)】 / 【右侧止盈 (逻辑证伪卖出)】 / 【防御加仓】)*
-
+### 🧠 [现役阵地深度推演与执行]
+*(用 2 句话，结合宏观与记忆，阐述现有持仓今日的底层逻辑。随后直接输出执行单)*
 ### 📝 [15:00 申赎执行单]
-- **永赢半导体 (015968)**：[不动 / 赎回] | ￥[金额] | [30字以内深度理由：必须包含KOSPI、量价或仓位饱和度]
-- **华宝纳斯达克 (017437)**：[不动 / 手动加仓] | ￥[金额] | [30字以内深度理由：必须基于NQmain或定投纪律]
-- **港股创新药 (019671)**：[不动 / 申购] | ￥[金额] | [30字以内深度理由：必须基于US10Y或坑位判定]
-- **博时黄金 (002611)**：[不动 / 申购] | ￥[金额] | [30字以内深度理由：必须基于XAU/USD表现与美债逻辑]
-- **中航机遇CPO (018957)**：[坚决不动 / 清仓] | ￥0 | [指出其诱多本质或逻辑硬伤]
+{exec_str}
 
-*(System Note: Generate ONLY the format above. Do NOT generate conversational intros/outros.)*
+### 🎯 [雷达池狙击信号 (4万备用金专属)]
+*(仔细对比雷达池的【估值探测数据】与【🎯 扳机】。若无完全吻合标的，回复：“全网雷达未触发定量扳机，4万备用金继续锁定静默”。若有吻合，给出建仓指令。)*
     """
     
-    # 强制切回 Pro 模型
+    # 🎯 切换为最强推理模型 gemini-3.1-pro-preview
+    # 配合 temperature=0.1，输出极其精准、不发散
     response = client.models.generate_content(
         model='gemini-3.1-pro-preview',
-        contents=prompt
+        contents=prompt,
+        config=genai.types.GenerateContentConfig(temperature=0.1)
     )
     return response.text
 
 # ==========================================
-# 5. 回写 Google Sheet
+# 6. 回写 Google Sheet
 # ==========================================
 def update_google_sheet(gc, full_log_text: str):
     sh = gc.open("基金净值总结")
@@ -270,27 +305,24 @@ def update_google_sheet(gc, full_log_text: str):
 # Workflow 主入口
 # ==========================================
 if __name__ == "__main__":
-    print("🚀 [Workflow Start] 启动 V2.1 究极量化引擎...")
+    print("🚀 [Workflow Start] 启动 V2.0 深潜雷达全息量化引擎...")
     try:
         gc = get_gspread_client()
         
-        print("⏳ [1/3] 正在生成带有量比与真实锚点的侦察情报...")
-        md_report, memory_json = collect_full_intelligence(gc)
-        
+        md_report, memory_json, rules_str, exec_str = collect_full_intelligence(gc)
         print("\n" + "="*50)
-        print("👇 14:45 真实盘面与量价情报 👇")
+        print("👇 14:45 真实盘面、量价与雷达探测情报 👇")
         print(md_report)
         print("="*50 + "\n")
         
-        print("⏳ [2/3] 正在唤醒受高压线约束的 AI Agent...")
-        decision = ask_fund_agent(md_report, memory_json)
+        print(f"⏳ 正在唤醒受高压线约束的 AI Agent (gemini-3.1-pro-preview)...")
+        decision = ask_fund_agent(md_report, memory_json, rules_str, exec_str)
         print("✅ AI 决策完成。")
         
-        print("⏳ [3/3] 正在将情报与决策缝合写入 Google Sheets...")
         full_log_text = f"{md_report}\n\n{'='*40}\n\n{decision}"
         update_google_sheet(gc, full_log_text)
         
-        print("🎉 [Success] V2.1 任务执行成功！")
+        print("🎉 [Success] V2.0 雷达任务执行成功！")
         
     except Exception as e:
         print(f"❌ [Failed] 报错信息: {e}")
