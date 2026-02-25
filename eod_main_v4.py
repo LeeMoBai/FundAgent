@@ -92,7 +92,7 @@ def run_eod_settlement():
     print(f"🚀 启动 V4.6 暴力清算中枢 (目标日期: {today_str})")
     
     gc = gspread.service_account_from_dict(json.loads(os.environ.get("GCP_SERVICE_ACCOUNT")))
-    sh = gc.open_by_key("请填入您的表格ID")
+    sh = gc.open_by_key("1kKz9snuCeMSKwBCBGRBBUo8P-04C72Dx5Pt3ArYvtRw")
     
     ws_dash = sh.worksheet("Dashboard")
     dash_data = ws_dash.get_all_values()
