@@ -157,35 +157,47 @@ def ask_v3_eod_agent(md_prompt: str) -> str:
     return response.text
 
 # ==========================================
-# 3. 落盘归档与企微推送 (V3.0)
+# 5. 落盘归档与企微拼接推送 (严格防截断版)
 # ==========================================
-def archive_and_notify_eod(md_prompt: str, ai_decision: str, strategic_json: dict):
+def archive_and_notify(md_prompt: str, ai_decision: str, strategic_json: dict):
     tz_bj = pytz.timezone('Asia/Shanghai')
     now = datetime.datetime.now(tz_bj)
     time_prefix = now.strftime('%Y-%m-%d_%H%M')
     
-    # 将 AI 的复盘也存入 JSON 底稿
-    strategic_json["ai_audit_and_sandbox"] = ai_decision
-    
+    strategic_json["ai_tactical_decision"] = ai_decision  
     os.makedirs("logs", exist_ok=True)
-    json_path = f"logs/{time_prefix}_EOD_Strategic.json"
+    json_path = f"logs/{time_prefix}_Strategic.json"
     
     with open(json_path, "w", encoding="utf-8") as f:
         json.dump(strategic_json, f, ensure_ascii=False, indent=2)
-    print(f"📦 EOD 战略级 JSON 已入库: {json_path}")
+    print(f"📦 战略级 JSON 已入库: {json_path}")
 
     robot_key = os.environ.get("WECHAT_ROBOT_KEY")
     if robot_key:
+        full_content = f"{md_prompt}\n---\n{ai_decision}"
+        
+        # 🎯 核心修复：按照字节(Bytes)来计算长度，一个汉字3个字节。
+        # 预留大概 150 个字节给标题和微信内部标签，设定安全线为 3800 字节。
+        if len(full_content.encode('utf-8')) > 3800:
+            # 如果超长，我们保守截取前 1100 个字符（约3300字节），绝对安全
+            full_content = full_content[:1100] + "\n\n...(内容过长，已被战术截断以保证推送)"
+            
         payload = {
             "msgtype": "markdown", 
             "markdown": {
-                "content": f"<font color='info'>**🌙 V3.0 晚间审计战报 (影分身测试)**</font>\n\n{md_prompt}\n{'='*20}\n{ai_decision}"
+                "content": f"<font color='warning'>**🚀 V3.0 盘中决策 (完整推演版)**</font>\n\n{full_content}"
             }
         }
         try:
             url = f"https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key={robot_key}"
-            requests.post(url, json=payload)
-            print("📡 企微推送成功！")
+            res = requests.post(url, json=payload)
+            res_data = res.json() # 抓取微信真实的返回数据
+            
+            # 🎯 核心诊断：只有 errcode 为 0 才是真成功
+            if res_data.get("errcode") == 0:
+                print("📡 企微推送成功！(含完整数据与深度推演)")
+            else:
+                print(f"❌ 企微拒绝发送！错误码: {res_data.get('errcode')}, 微信官方解释: {res_data.get('errmsg')}")
         except Exception as e:
             print(f"❌ 企微推送网络异常: {e}")
 
