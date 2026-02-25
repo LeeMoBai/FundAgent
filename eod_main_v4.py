@@ -28,16 +28,23 @@ def get_gspread_client():
     return gspread.service_account_from_dict(json.loads(creds_json))
 
 # ==========================================
-# 1. 获取场外基金净值 (穿透式API)
+# 1. 获取场外基金净值 (穿透缓存 + 精准日期对齐)
 # ==========================================
-def get_fund_nav(fund_code: str):
+import time
+
+def get_fund_nav_by_date(fund_code: str, target_date: str):
     try:
-        url = f"https://fundmobapi.eastmoney.com/FundMNewApi/FundMNHisNetList?FCODE={fund_code}&pageIndex=1&pageSize=1"
+        # 加上时间戳，彻底击穿天天基金的 CDN 缓存
+        ts = int(time.time() * 1000)
+        url = f"https://fundmobapi.eastmoney.com/FundMNewApi/FundMNHisNetList?FCODE={fund_code}&pageIndex=1&pageSize=10&_={ts}"
         headers = {"User-Agent": "Mozilla/5.0"}
         resp = requests.get(url, headers=headers, timeout=5)
         data = resp.json()
         if data and 'Datas' in data and data['Datas']:
-            return float(data['Datas'][0]['NAV'])
+            for item in data['Datas']:
+                # 🛡️ 极其严苛：只要这一天的净值！宁可留空绝不张冠李戴
+                if item['FSRQ'] == target_date:
+                    return str(item['NAV'])
     except Exception as e:
         print(f"   [!] 获取净值失败 {fund_code}: {e}")
     return ""
@@ -72,19 +79,21 @@ def get_etf_eod_data(proxy_code: str):
     return result
 
 # ==========================================
-# 3. 执行静默写入与历史归档任务 (V4.2 终极防空洞版)
+# 3. 执行静默写入与历史归档任务 (智能可重入版)
 # ==========================================
 def run_eod_settlement():
-    print("🌙 启动 V4.2 EOD 静默后勤清算系统...")
+    tz_bj = pytz.timezone('Asia/Shanghai')
+    today_str = datetime.datetime.now(tz_bj).strftime('%Y-%m-%d')
+    print(f"🌙 启动 V4.3 EOD 静默后勤清算 (目标日期: {today_str})...")
+    
     gc = get_gspread_client()
-    sh = gc.open_by_key("1kKz9snuCeMSKwBCBGRBBUo8P-04C72Dx5Pt3ArYvtRw") # <--- 别忘了填您的 ID
+    sh = gc.open_by_key("请填入您的表格ID") # <--- 别忘了填您的 ID
     
     # --- 任务 A: 刷新 Dashboard ---
     ws_dash = sh.worksheet("Dashboard")
     dash_data = ws_dash.get_all_values()
     headers = dash_data[0]
     
-    # 极度强健的列名匹配器 (只要包含关键字就能认出来)
     def get_idx(kw): return next((i for i, h in enumerate(headers) if kw in h), -1)
     
     idx_fund = get_idx("基金代码")
@@ -103,7 +112,6 @@ def run_eod_settlement():
         fund_code_raw = str(row[idx_fund]).strip() if idx_fund != -1 else ""
         if not fund_code_raw: continue
         
-        # 🛡️ 核心修复 1：强行补齐6位代码，防止 Google Sheets 吞掉开头的 0
         fund_code = fund_code_raw.zfill(6)
         if not fund_code.isdigit(): continue
             
@@ -114,18 +122,15 @@ def run_eod_settlement():
         
         fund_state = {}
         
-        # 1. 抓取真实净值
-        nav = get_fund_nav(fund_code)
+        # 1. 抓取真实净值 (严格匹配今天)
+        nav = get_fund_nav_by_date(fund_code, today_str)
         
-        # 🛡️ 核心修复 2：极速兜底！如果抓取失败，强行使用当前表格里已有的净值作为兜底，绝不留空
         if nav == "":
-            nav = str(row[idx_nav]).strip() if idx_nav != -1 else ""
-            print(f"   [!] {fund_name} 净值更新延迟，已启用盘口净值兜底: {nav}")
-        
-        if nav != "":
+            print(f"   [!] {fund_name} {today_str} 的净值尚未公布，跳过更新。")
+        else:
             if idx_nav != -1: updates.append({'range': rowcol_to_a1(row_idx, idx_nav + 1), 'values': [[nav]]})
             fund_state["final_nav"] = nav
-            nav_dict[fund_code] = nav  # 存入字典的钥匙，绝对是完美的 6 位数
+            nav_dict[fund_code] = nav
         
         # 2. 抓取 ETF 盘后数据
         if proxy_code:
@@ -171,20 +176,40 @@ def run_eod_settlement():
     except Exception as e:
         print(f"   [!] 雷达监控 更新异常: {e}")
 
-    # --- 任务 C: 自动追加 History 表 ---
+    # --- 任务 C: 自动追加 History 表 (🛡️核心修复：智能可重入融合机制) ---
     try:
         ws_hist = sh.worksheet("History")
         hist_data = ws_hist.get_all_values()
         if len(hist_data) >= 2:
             fund_codes_in_hist = hist_data[1]
-            new_row = [datetime.datetime.now(pytz.timezone('Asia/Shanghai')).strftime('%Y-%m-%d')]
+            
+            # 判断第三行是否已经是今天的数据
+            is_today_exists = (len(hist_data) > 2 and hist_data[2][0] == today_str)
+            
+            new_row = [today_str]
             for code in fund_codes_in_hist[1:]:
-                # 🛡️ 核心修复 3：对齐字典的键，让 "015968" 严丝合缝匹配！
                 code_key = str(code).strip().zfill(6)
-                nav_value = nav_dict.get(code_key, "")
-                new_row.append(nav_value)
-            ws_hist.insert_row(new_row, 3) 
-            print("   [√] 历史净值曲线表 (History) 追加成功！")
+                new_row.append(nav_dict.get(code_key, ""))
+                
+            if is_today_exists:
+                # 已经有今天的行了，启动智能填缝！
+                old_row = hist_data[2]
+                cells_to_update = []
+                for i in range(1, len(new_row)):
+                    # 如果刚才没抓到新数据，但表格里原本有数据，就继承旧数据，绝不覆盖成空
+                    if new_row[i] == "" and i < len(old_row):
+                        new_row[i] = old_row[i]
+                    
+                    # 批量打包需要更新的格子
+                    cells_to_update.append({'range': rowcol_to_a1(3, i+1), 'values': [[new_row[i]]]})
+                    
+                if cells_to_update:
+                    ws_hist.batch_update(cells_to_update)
+                print("   [√] 历史净值表 (History) 今日行已存在，已执行智能填缝补漏！")
+            else:
+                # 还没有今天的行，直接全新插入
+                ws_hist.insert_row(new_row, 3) 
+                print("   [√] 历史净值表 (History) 追加新日期成功！")
     except Exception as e:
         print(f"   [!] History 表更新异常: {e}")
 
