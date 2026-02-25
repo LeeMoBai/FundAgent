@@ -9,10 +9,24 @@ from google import genai
 import pandas as pd
 import re
 import requests
+import concurrent.futures
 
 # ==========================================
-# 0. 认证初始化
+# 0. 战术熔断器 (Tactical Timeout)
 # ==========================================
+def fetch_with_timeout(func, timeout_sec, *args, **kwargs):
+    """强制熔断机制：防止任何第三方 API 假死导致系统卡死"""
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(func, *args, **kwargs)
+        try:
+            return future.result(timeout=timeout_sec)
+        except concurrent.futures.TimeoutError:
+            raise TimeoutError("接口假死，已强制战术熔断！")
+
+def get_yf_history(symbol, period="5d"):
+    """封装 YFinance 以便穿透熔断器"""
+    return yf.Ticker(symbol).history(period=period)
+
 def get_gspread_client():
     creds_json = os.environ.get("GCP_SERVICE_ACCOUNT")
     if not creds_json:
@@ -20,7 +34,7 @@ def get_gspread_client():
     return gspread.service_account_from_dict(json.loads(creds_json))
 
 # ==========================================
-# 1. 抓取宏观数据 (经典命名)
+# 1. 抓取宏观数据 (带 5 秒熔断)
 # ==========================================
 def get_macro_v3() -> tuple:
     tactical_macro = {}
@@ -36,7 +50,8 @@ def get_macro_v3() -> tuple:
     
     for display_name, symbol in tickers_map.items():
         try:
-            data = yf.Ticker(symbol).history(period="5d")
+            # 🎯 给 YFinance 加上 5 秒强制熔断
+            data = fetch_with_timeout(get_yf_history, 5, symbol, "5d")
             if len(data) >= 2:
                 closes = data['Close'].tolist()
                 pct_chg = ((closes[-1] - closes[-2]) / closes[-2]) * 100
@@ -57,23 +72,23 @@ def get_macro_v3() -> tuple:
     return tactical_macro, strategic_macro
 
 # ==========================================
-# 2. 抓取 ETF (彻底修复盲区：双引擎容灾机制)
+# 2. 抓取 ETF (双引擎容灾 + 5秒熔断)
 # ==========================================
 def get_realtime_etf_features(proxy_code: str, spot_df: pd.DataFrame) -> dict:
-    features = {"today_pct": 0.0, "tactical_desc": "无量价数据", "5d_vol_ratios": [], "ma250_dist": 0.0}
+    features = {"today_pct": 0.0, "tactical_desc": "量价盲区", "5d_vol_ratios": [], "ma250_dist": 0.0}
     pct_found = False
     
-    # 步骤 A：实时盘口抓涨跌
     if not spot_df.empty:
         match = spot_df[spot_df["代码"] == proxy_code]
         if not match.empty:
             features["today_pct"] = round(float(match.iloc[0]['涨跌幅']), 2)
             pct_found = True
             
-    # 步骤 B：抓取日线（优先 AkShare）
     vols, prices = [], []
+    
+    # 🎯 AkShare 引擎 (限时 5 秒)
     try:
-        hist_df = ak.fund_etf_hist_em(symbol=proxy_code, period="daily")
+        hist_df = fetch_with_timeout(ak.fund_etf_hist_em, 5, symbol=proxy_code, period="daily")
         if len(hist_df) >= 2:
             vols = hist_df.tail(6)['成交额'].tolist()
             prices = hist_df.tail(6)['收盘'].tolist()
@@ -84,13 +99,13 @@ def get_realtime_etf_features(proxy_code: str, spot_df: pd.DataFrame) -> dict:
                 features["today_pct"] = round(((prices[-1] - prices[-2]) / prices[-2]) * 100, 2)
                 pct_found = True
     except:
-        pass # 被拦截，交接给下方 YF
+        pass 
 
-    # 步骤 C：YFinance 容灾引擎（补价格 + 补量）
+    # 🎯 YFinance 引擎接管 (限时 5 秒)
     if not vols or not prices:
         try:
             suffix = ".SS" if proxy_code.startswith("5") else ".SZ"
-            df_yf = yf.Ticker(f"{proxy_code}{suffix}").history(period="6d")
+            df_yf = fetch_with_timeout(get_yf_history, 5, f"{proxy_code}{suffix}", "6d")
             if len(df_yf) >= 2:
                 vols = df_yf['Volume'].tolist()
                 prices = df_yf['Close'].tolist()
@@ -99,7 +114,7 @@ def get_realtime_etf_features(proxy_code: str, spot_df: pd.DataFrame) -> dict:
         except:
             pass
 
-    # 步骤 D：计算量比
+    # 计算量比
     if vols and len(vols) >= 2:
         ratios = [round(vols[i]/vols[i-1], 2) if vols[i-1]>0 else 1.0 for i in range(1, len(vols))]
         features["5d_vol_ratios"] = ratios
@@ -118,9 +133,12 @@ def collect_v3_intelligence(gc) -> tuple:
     sh = gc.open("基金净值总结")
     tac_macro, strat_macro = get_macro_v3()
     
-    print("   [+] 启动双引擎穿透式抓取...")
-    try: etf_spot = ak.fund_etf_spot_em()
-    except: etf_spot = pd.DataFrame()
+    print("   [+] 启动双引擎穿透式抓取 (带超时熔断)...")
+    try: 
+        # 🎯 全市场盘口抓取限时 8 秒，绝不卡死
+        etf_spot = fetch_with_timeout(ak.fund_etf_spot_em, 8)
+    except: 
+        etf_spot = pd.DataFrame()
     
     dash_data = sh.worksheet("Dashboard").get_all_values()
     headers = dash_data[0]
@@ -146,13 +164,11 @@ def collect_v3_intelligence(gc) -> tuple:
             pos_str = "未知"
 
         if rule: tactical_rules.append(f"- **{name}**：{rule}")
-        # 强制极简占位符
         exec_template.append(f"- **{name}**：[指令] | ￥[金额] | [理由(限15字)。[证伪]:限8字]")
         
         if proxy:
             features = get_realtime_etf_features(proxy, etf_spot)
             pct = features["today_pct"]
-            # 字节级压缩排版
             tactical_etfs.append(f"* **{name}**({proxy}): {pct:+.2f}% | 仓:{pos_str} | {features['tactical_desc']}")
             strategic_archive["active_positions"].append({"name": name, "proxy": proxy, "today_pct": pct})
 
@@ -243,7 +259,7 @@ def archive_and_notify(md_prompt: str, ai_decision: str, strategic_json: dict):
         payload = {
             "msgtype": "markdown", 
             "markdown": {
-                "content": f"🚀 **V3.0 盘中决策 (终极修缮版)**\n\n{full_content}"
+                "content": f"🚀 **V3.0 盘中决策 (防假死突围版)**\n\n{full_content}"
             }
         }
         try:
