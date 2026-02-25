@@ -71,17 +71,16 @@ def get_macro_v3() -> tuple:
     return tactical_macro, strategic_macro
 
 # ==========================================
-# 2. 抓取 ETF (引入 V4.0 定量均线计算)
+# 2. 抓取 ETF (修复 MA20/MA60 的 0.00% 致命 Bug)
 # ==========================================
 def get_realtime_etf_features(proxy_code: str) -> dict:
     features = {
         "today_pct": 0.0, 
         "tactical_desc": "无量价", 
-        "ma20_dist": 0.0,   # 🎯 V4.0 核心：距离20日线的乖离率
-        "ma60_dist": 0.0    # 🎯 V4.0 核心：距离60日线的乖离率
+        "ma20_dist": 0.0,
+        "ma60_dist": 0.0
     }
     
-    # 步骤 1：腾讯极速 API 抓盘口涨跌
     try:
         prefix = "sh" if proxy_code.startswith("5") else "sz"
         url = f"http://qt.gtimg.cn/q={prefix}{proxy_code}"
@@ -92,17 +91,16 @@ def get_realtime_etf_features(proxy_code: str) -> dict:
     except:
         pass 
 
-    # 步骤 2：抓历史算量比与均线
     vols = []
+    # 🎯 步骤 A：尝试用 AkShare 算均线
     for _ in range(2):
         try:
-            hist_df = fetch_with_timeout(ak.fund_etf_hist_em, 5, symbol=proxy_code, period="daily")
+            hist_df = fetch_with_timeout(ak.fund_etf_hist_em, 4, symbol=proxy_code, period="daily")
             if len(hist_df) >= 2:
                 vols = hist_df.tail(6)['成交额'].tolist()
-                closes = hist_df['收盘'].tolist()
+                closes = [float(x) for x in hist_df['收盘'].tolist()]
                 current_c = closes[-1]
                 
-                # 🎯 V4.0 机器苦力：计算 MA20 与 MA60 的实时乖离
                 if len(closes) >= 20:
                     ma20 = sum(closes[-20:]) / 20.0
                     features["ma20_dist"] = round(((current_c - ma20) / ma20) * 100, 2)
@@ -113,13 +111,22 @@ def get_realtime_etf_features(proxy_code: str) -> dict:
         except:
             pass
 
-    # 步骤 3：雅虎补量
-    if not vols:
+    # 🎯 步骤 B：AkShare 失败，雅虎全面接管 (抓取 3个月/约60天数据算均线)
+    if not vols or features["ma20_dist"] == 0.0:
         try:
             suffix = ".SS" if proxy_code.startswith("5") else ".SZ"
-            df_yf = fetch_with_timeout(get_yf_history, 4, f"{proxy_code}{suffix}", "6d")
+            df_yf = fetch_with_timeout(get_yf_history, 4, f"{proxy_code}{suffix}", "3mo")
             if len(df_yf) >= 2:
-                vols = df_yf['Volume'].tolist()
+                vols = df_yf['Volume'].tolist()[-6:] # 取最后6天算量比
+                closes = df_yf['Close'].tolist()
+                current_c = closes[-1]
+                
+                if features["ma20_dist"] == 0.0 and len(closes) >= 20:
+                    ma20 = sum(closes[-20:]) / 20.0
+                    features["ma20_dist"] = round(((current_c - ma20) / ma20) * 100, 2)
+                if features["ma60_dist"] == 0.0 and len(closes) >= 60:
+                    ma60 = sum(closes[-60:]) / 60.0
+                    features["ma60_dist"] = round(((current_c - ma60) / ma60) * 100, 2)
         except:
             pass
 
@@ -133,7 +140,7 @@ def get_realtime_etf_features(proxy_code: str) -> dict:
     return features
 
 # ==========================================
-# 3. 组装情报 (向 AI 喂入均线状态)
+# 3. 组装情报 (向 AI 喂入均线状态与瘦身雷达)
 # ==========================================
 def collect_v3_intelligence(gc) -> tuple:
     sh = gc.open("基金净值总结")
@@ -173,7 +180,6 @@ def collect_v3_intelligence(gc) -> tuple:
             pos_str = "未知"
 
         if rule: tactical_rules.append(f"- **{name}**：{rule}")
-        # V4.0 执行单模板
         exec_template.append(f"- **{name}**：[指令] | ￥[金额] | [极简理由。若触发纪律则必须标红🚨]")
         
         if "纳斯达克" in name or "标普" in name:
@@ -185,12 +191,11 @@ def collect_v3_intelligence(gc) -> tuple:
             if proxy:
                 features = get_realtime_etf_features(proxy)
                 pct = features["today_pct"]
-                # 🎯 V4.0：直接把均线乖离率打印在情报里喂给 AI 和你
                 ma_info = f"MA20乖离:{features['ma20_dist']:+.2f}%"
                 tactical_etfs.append(f"* **{name}**({proxy}): {pct:+.2f}% | 仓:{pos_str} | {features['tactical_desc']} | {ma_info}")
                 strategic_archive["active_positions"].append({"name": name, "proxy": proxy, "today_pct": pct})
 
-    # 雷达池部分保持精简
+    # 🎯 强制压缩雷达池文本，释放微信排版空间
     tactical_radar = []
     try:
         radar_data = sh.worksheet("雷达监控").get_all_values()
@@ -201,7 +206,12 @@ def collect_v3_intelligence(gc) -> tuple:
             r_name = row[r_idx("板块名称")] if r_idx("板块名称") != -1 else ""
             r_proxy_raw = row[r_idx("替身代码")] if r_idx("替身代码") != -1 else ""
             r_proxy = re.search(r'\d{6}', r_proxy_raw).group(0) if re.search(r'\d{6}', r_proxy_raw) else ""
+            
+            # 暴力截断扳机描述
             r_trigger = row[r_idx("狙击触发条件")] if r_idx("狙击触发条件") != -1 else ""
+            if len(r_trigger) > 15:
+                r_trigger = r_trigger[:15] + ".."
+                
             if r_proxy:
                 features = get_realtime_etf_features(r_proxy)
                 ma_info = f"MA60乖离:{features['ma60_dist']:+.2f}%"
@@ -238,12 +248,11 @@ def ask_v3_tactical_agent(md_prompt: str, rules_str: str, exec_str: str) -> str:
 {rules_str}
 
 # V4.0 绝对指令（必须遵守）：
-1. 【宏观诊断】与【阵地推演】：依然要求你保持极高含金量的深度分析，深度剖析资金高低切换、KOSPI映射与科技巨头资本开支流向。
+1. 【宏观诊断】与【阵地推演】：深度剖析资金高低切换、KOSPI映射与科技巨头资本开支流向。
 2. 【执行单裁决】：
-   - 你必须读取数据中的 `MA20乖离`。如果乖离率是负数（如 -1.50%），说明已经跌破20日线！
-   - 如果纪律里写了“破20日线”，且数据确实跌破了，**你必须在执行单前方加上 🚨，并下达绝对清仓/减仓指令，标明 [绝对证伪触发]**！
-   - 如果未破线，指令必须是极其笃定的“锁仓死拿，逻辑成立”。
-   - 绝不允许让用户自己去“看盘确认”！你就是最终裁判！
+   - 必须审视数据中的 `MA20乖离`。如果乖离率是负数（如 -1.50%），说明已经彻底跌破20日线！
+   - 如果纪律里写了“破20日线”，且乖离率<0，**必须在执行单前方加上 🚨，下达绝对清仓/减仓指令，标明 [绝对证伪触发]**！
+   - 如果乖离率为正，指令必须是“锁仓死拿，逻辑成立”。
 
 # Output Format：
 ### 🌍 [宏观主线诊断]
@@ -258,7 +267,7 @@ def ask_v3_tactical_agent(md_prompt: str, rules_str: str, exec_str: str) -> str:
     response = client.models.generate_content(
         model='gemini-3.1-pro-preview', 
         contents=prompt, 
-        config=genai.types.GenerateContentConfig(temperature=0.1) # 极度冷血的温度
+        config=genai.types.GenerateContentConfig(temperature=0.1) 
     )
     return response.text
 
@@ -280,6 +289,8 @@ def archive_and_notify(md_prompt: str, ai_decision: str, strategic_json: dict):
     robot_key = os.environ.get("WECHAT_ROBOT_KEY")
     if robot_key:
         full_content = f"{md_prompt}\n====================\n\n{ai_decision}"
+        
+        # 预留了极大的排版空间，绝不可能再被截断核心指令
         if len(full_content.encode('utf-8')) > 3900:
             full_content = full_content[:1250] + "\n\n...(字数触及上限，安全截断)"
             
