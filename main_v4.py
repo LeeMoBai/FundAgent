@@ -159,38 +159,22 @@ def ask_v4_tactical_agent(md_prompt: str, rules_str: str) -> dict:
     return json.loads(response.text)
 
 # ==========================================
-# 4. Google Doc 知识库引擎 (按月建档 + 倒序插入)
+# 4. Google Doc 知识库引擎 (固定阵地倒序插入)
 # ==========================================
-def update_google_doc(creds, report_text: str) -> str:
+def update_google_doc(creds, report_text: str, target_doc_id: str) -> str:
     tz_bj = pytz.timezone('Asia/Shanghai')
     now = datetime.datetime.now(tz_bj)
-    month_str = now.strftime('%Y-%m')
     date_str = now.strftime('%Y-%m-%d %H:%M')
-    doc_title = f"EOD-{month_str} 投研复盘"
     
-    drive_service = build('drive', 'v3', credentials=creds)
     docs_service = build('docs', 'v1', credentials=creds)
     
-    # 查找当月文档是否存在
-    query = f"name='{doc_title}' and mimeType='application/vnd.google-apps.document'"
-    results = drive_service.files().list(q=query, fields="files(id, name)").execute()
-    files = results.get('files', [])
-    
-    if not files:
-        # 不存在则创建，并开放只读链接
-        doc = docs_service.documents().create(body={'title': doc_title}).execute()
-        doc_id = doc.get('documentId')
-        drive_service.permissions().create(fileId=doc_id, body={'type': 'anyone', 'role': 'reader'}).execute()
-    else:
-        doc_id = files[0]['id']
-        
     # 将今日报告直接插在文档最开头 (Index 1)
     insert_text = f"\n\n=================================\n📅 {date_str} 盘中风控决断\n=================================\n{report_text}\n"
     requests = [{'insertText': {'location': {'index': 1}, 'text': insert_text}}]
     
-    docs_service.documents().batchUpdate(documentId=doc_id, body={'requests': requests}).execute()
+    docs_service.documents().batchUpdate(documentId=target_doc_id, body={'requests': requests}).execute()
     
-    return f"https://docs.google.com/document/d/{doc_id}/edit"
+    return f"https://docs.google.com/document/d/{target_doc_id}/edit"
 
 # ==========================================
 # 5. 企业微信极简推送
@@ -210,7 +194,7 @@ def notify_wechat(summary_list, orders_list, doc_link):
 📝 **执行指令**:
 {orders_str}
 
-🔗 **[点击直达本月深度推演研报]({doc_link})**
+🔗 **[点击直达战术总参谋部日记]({doc_link})**
 *(已自动插入今日最新剖析)*"""
 
     payload = {"msgtype": "markdown", "markdown": {"content": content}}
@@ -222,6 +206,10 @@ def notify_wechat(summary_list, orders_list, doc_link):
 
 if __name__ == "__main__":
     print("🚀 启动 V4.0 白天空战中枢...")
+    
+    # 👇👇👇 【总司令请注意】将您刚才复制的文档 ID 填在这里 👇👇👇
+    MY_DOC_ID = "请在这里填入您的_Google_Doc_ID"
+    
     creds = get_google_credentials()
     gc = gspread.authorize(creds)
     
@@ -229,13 +217,12 @@ if __name__ == "__main__":
     print("🧠 正在请求首席风控官进行裁决...")
     ai_json = ask_v4_tactical_agent(md_prompt, rules_str)
     
-    print("📝 正在自动归档生成 Google Doc 研报...")
-    doc_link = update_google_doc(creds, ai_json["doc_full_report"])
+    print("📝 正在向总参谋部日记注入最新研报...")
+    doc_link = update_google_doc(creds, ai_json["doc_full_report"], MY_DOC_ID)
     
     print("📲 正在发送微信极简警报...")
     notify_wechat(ai_json["wechat_summary"], ai_json["execution_orders"], doc_link)
     
-    # 将 JSON 存至 GitHub 本地作为冷备和未来微调材料
     os.makedirs("logs", exist_ok=True)
     with open(f"logs/AI_Trade_Log_{datetime.datetime.now().strftime('%Y%m%d')}.json", "w", encoding="utf-8") as f:
         json.dump(ai_json, f, ensure_ascii=False, indent=2)
