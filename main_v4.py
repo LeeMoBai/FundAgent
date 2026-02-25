@@ -280,18 +280,44 @@ def ask_v4_tactical_agent(md_prompt: str, rules_str: str) -> dict:
     return json.loads(response.text)
 
 # ==========================================
-# 5. Google Doc 固定阵地注入
+# 5. Google Doc 固定阵地注入 (支持左侧大纲导航)
 # ==========================================
 def update_google_doc(creds, report_text: str, target_doc_id: str) -> str:
     tz_bj = pytz.timezone('Asia/Shanghai')
     now = datetime.datetime.now(tz_bj)
     date_str = now.strftime('%Y-%m-%d %H:%M')
     docs_service = build('docs', 'v1', credentials=creds)
-    insert_text = f"\n\n=================================\n📅 {date_str} 盘中风控决断\n=================================\n{report_text}\n"
-    requests = [{'insertText': {'location': {'index': 1}, 'text': insert_text}}]
+    
+    # 将标题和正文分开，以精准计算标题的长度
+    title_text = f"📅 {date_str} 盘中风控决断\n"
+    body_text = f"{report_text}\n\n"
+    full_text = title_text + body_text
+    
+    # 组合 API 指令：先插入文字，再刷上标题格式
+    requests = [
+        {
+            'insertText': {
+                'location': {'index': 1},
+                'text': full_text
+            }
+        },
+        {
+            'updateParagraphStyle': {
+                'range': {
+                    'startIndex': 1,
+                    # 极其精准：只把标题部分的文字刷成 Heading 2，正文保持原样
+                    'endIndex': 1 + len(title_text)
+                },
+                'paragraphStyle': {
+                    'namedStyleType': 'HEADING_2'
+                },
+                'fields': 'namedStyleType'
+            }
+        }
+    ]
+    
     docs_service.documents().batchUpdate(documentId=target_doc_id, body={'requests': requests}).execute()
     return f"https://docs.google.com/document/d/{target_doc_id}/edit"
-
 # ==========================================
 # 6. 企业微信终极排版拼接
 # ==========================================
