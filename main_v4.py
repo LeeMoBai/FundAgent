@@ -34,7 +34,7 @@ def get_google_credentials():
     return service_account.Credentials.from_service_account_info(creds_dict, scopes=scopes)
 
 # ==========================================
-# 1. 宏观水位引擎 (双轨输出：排版字符 + 纯数字)
+# 1. 宏观水位引擎 (引入 QQQ 用于 QDII 参照)
 # ==========================================
 def get_macro_waterlevel():
     tickers = {
@@ -43,10 +43,11 @@ def get_macro_waterlevel():
         "KOSPI": "^KS11",
         "黄金(XAU)": "GC=F",
         "纳指(NQ)": "NQ=F",
+        "纳指ETF(QQQ)": "QQQ", # 专供华宝纳斯达克提取“昨夜”数据
         "XBI": "XBI"
     }
     macro_strs = []
-    macro_raw_dict = {} # 给未来 AI 训练用的纯数字字典
+    macro_raw_dict = {} 
     
     def fetch_ticker(name, symbol):
         try:
@@ -69,11 +70,13 @@ def get_macro_waterlevel():
             pass
         return name, f"{name}:暂无", None, None
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=6) as executor:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=7) as executor:
         futures = {executor.submit(fetch_ticker, k, v): k for k, v in tickers.items()}
         for fut in concurrent.futures.as_completed(futures):
             name, disp_str, raw_val, raw_pct = fut.result()
-            macro_strs.append(disp_str)
+            # 隐藏 QQQ，不让它占用全局宏观显示位，只留给下面特定基金调用
+            if name != "纳指ETF(QQQ)" and disp_str != "纳指ETF(QQQ):暂无":
+                macro_strs.append(disp_str)
             if raw_val is not None:
                 macro_raw_dict[name] = {"value": raw_val, "pct": raw_pct}
             
@@ -117,7 +120,7 @@ def get_realtime_data(proxy_code: str, eod_vol_str: str):
     return None, None, "无量比", None
 
 # ==========================================
-# 3. 组装情报 (生成微信排版 + 提取纯净数据字典)
+# 3. 组装情报 (生成微信排版底稿 + 提取纯净数据字典)
 # ==========================================
 def collect_v4_intelligence(gc) -> tuple:
     sh = gc.open("基金净值总结")
@@ -128,12 +131,17 @@ def collect_v4_intelligence(gc) -> tuple:
     def get_idx(kw): return next((i for i, h in enumerate(headers) if kw in h), -1)
     
     macro_str, macro_raw_dict = get_macro_waterlevel()
-    hard_data_display = [] 
+    hard_data_dict = {}  # 核心：存储每只基金的纯硬数据字符串
     ai_prompt_etfs, ai_prompt_rules = [], []
-    portfolio_raw_list = [] # 给未来 AI 训练用的纯净持仓数据数组
+    portfolio_raw_list = [] 
     
     idx_share = get_idx("持有份额")
     idx_eod_vol = get_idx("[EOD]昨成交额")
+    idx_camp = get_idx("资产阵营")
+    
+    # 提取 QDII 需要的宏观数据
+    us_qqq_pct = macro_raw_dict.get("纳指ETF(QQQ)", {}).get("pct")
+    us_nq_pct = macro_raw_dict.get("纳指(NQ)", {}).get("pct")
     
     for row in dash_data[1:]:
         if not row or (get_idx("基金代码") != -1 and not row[get_idx("基金代码")].strip().isdigit()): continue
@@ -142,6 +150,7 @@ def collect_v4_intelligence(gc) -> tuple:
         proxy = row[get_idx("替身代码 (ETF)")]
         rule_limit = row[get_idx("定量证伪底线")]
         rule_logic = row[get_idx("定性持仓逻辑")]
+        camp = row[idx_camp].strip() if idx_camp != -1 else ""
         
         shares_str = row[idx_share].strip() if idx_share != -1 else "0"
         eod_vol_str = row[idx_eod_vol].strip() if idx_eod_vol != -1 else ""
@@ -156,24 +165,27 @@ def collect_v4_intelligence(gc) -> tuple:
         market_value = (shares * current_price) if current_price else 0.0
         mv_str = f"¥{market_value/1000:.1f}k" if market_value > 0 else "空仓"
         
-        ma_status = "MA20:未知"
         raw_ma_dist = None
-        if current_price and ma20_eod > 0:
-            raw_ma_dist = ((current_price - ma20_eod) / ma20_eod) * 100
-            ma_status = f"MA20乖离:{raw_ma_dist:+.2f}%"
-            
-        pct_str = f"{today_pct:+.2f}%" if today_pct is not None else "停牌"
         
-        # 1. 组装给微信的硬排版字符
-        display_line = f"**{name}**: {pct_str} | 仓:{mv_str} | {vol_str} | {ma_status}"
+        # === 核心改版：区分 QDII 与 A股 的展示逻辑 ===
+        if "美股" in camp or "QDII" in camp or "纳斯达克" in name:
+            q_str = f"{us_qqq_pct:+.2f}%" if us_qqq_pct is not None else "未知"
+            n_str = f"{us_nq_pct:+.2f}%" if us_nq_pct is not None else "未知"
+            hard_data = f"昨夜 {q_str} | 期指 {n_str} | 仓:{mv_str} |"
+            ai_prompt_etfs.append(f"* **{name}** {pos_status}: 昨夜涨跌 {q_str} | 盘前(期指) {n_str} | 底线纪律:{rule_limit}")
+        else:
+            ma_status = "MA20:未知"
+            if current_price and ma20_eod > 0:
+                raw_ma_dist = ((current_price - ma20_eod) / ma20_eod) * 100
+                ma_status = f"MA20乖离:{raw_ma_dist:+.2f}%"
+            pct_str = f"{today_pct:+.2f}%" if today_pct is not None else "停牌"
+            hard_data = f"{pct_str} | 仓:{mv_str} | {vol_str} | {ma_status} |"
+            ai_prompt_etfs.append(f"* **{name}**({proxy}) {pos_status}: 今日 {pct_str} | {ma_status} | 底线纪律:{rule_limit}")
+        
         if shares > 0 or today_pct is not None:
-            hard_data_display.append(display_line)
-        
-        # 2. 组装给大模型做决断的提示词
-        ai_prompt_etfs.append(f"* **{name}**({proxy}) {pos_status}: 今日 {pct_str} | {ma_status} | 底线纪律:{rule_limit}")
+            hard_data_dict[name] = hard_data
+            
         ai_prompt_rules.append(f"- **{name}**: {rule_logic}")
-
-        # 3. 组装给未来自己做 AI 训练用的纯净数据
         portfolio_raw_list.append({
             "name": name,
             "status": "空仓" if shares <= 0 else "持仓",
@@ -185,16 +197,16 @@ def collect_v4_intelligence(gc) -> tuple:
 
     md_prompt = f"## 🎯 场内盘口状态\n{chr(10).join(ai_prompt_etfs)}\n## 🌍 宏观水位\n{macro_str}"
     
-    return md_prompt, "\n".join(ai_prompt_rules), macro_str, hard_data_display, macro_raw_dict, portfolio_raw_list
+    return md_prompt, "\n".join(ai_prompt_rules), macro_str, hard_data_dict, macro_raw_dict, portfolio_raw_list
 
 # ==========================================
-# 4. AI 首席风控官 (严格限制只出结论)
+# 4. AI 首席风控官 (严格限制 JSON 字典输出)
 # ==========================================
 def ask_v4_tactical_agent(md_prompt: str, rules_str: str) -> dict:
     client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
     prompt = f"""
 # Role: 顶级对冲基金量化总监
-当前是 14:45。请基于以下盘口和宏观数据，输出冷静专业的交易指令。必须结合比特币流动性、韩国KOSPI等进行分析。
+当前是 14:45。请基于盘口和宏观数据输出冷静专业的决断。
 
 【输入盘口情报】：
 {md_prompt}
@@ -202,17 +214,25 @@ def ask_v4_tactical_agent(md_prompt: str, rules_str: str) -> dict:
 {rules_str}
 
 # 🔴 核心约束条件：
-1. 【执行指令】中，**只输出需要立即采取实质性动作（买入、止损、触及底线）的标的**。如果安全观望或空仓，绝对不要列出。
-2. 绝对不能使用“绞杀”、“冷血”等情绪化词汇。客观专业。
-3. 状态判定：如果标的标注了“【已空仓】”，绝对不能喊“卖出/清仓”。
+1. 必须为输入的【每一个标的】（无论是否空仓）在 `fund_decisions` 中输出决策动作和理由，绝不可遗漏！
+2. 状态判定：如果标的标注了“【已空仓】”，绝对不能喊“卖出/清仓”。
+3. 不要使用情绪化词汇。
+4. `doc_full_report` 必须长达800字，且**必须结合韩国股市(KOSPI)映射、比特币流动性水位、科技巨头资本开支流向**进行深度宏观穿透分析。
 
 # 输出要求 (必须是合法的 JSON 格式)：
 {{
-  "ai_summary": "用两句话总结今天的宏观状态和盘面异常点，以及整体操作定调。",
-  "execution_orders": [
-    "🚨 天弘机器人：平仓止损 | 已实质性跌破MA20生命线"
-  ],
-  "doc_full_report": "### 🌍 宏观诊断与阵地推演\\n(结合宏观水位数据、资金流向进行800字深度长篇复盘。)"
+  "ai_summary": "用两句话总结今天的宏观状态和盘面异常点。",
+  "fund_decisions": {{
+    "永赢半导体": {{
+      "action": "锁仓",
+      "reason": "稳居MA20之上，利润垫丰厚，红盘严禁加仓，死拿不动。"
+    }},
+    "华宝纳斯达克": {{
+      "action": "定投",
+      "reason": "未见期指-2%实质性暴跌，维持日常定投节奏。"
+    }}
+  }},
+  "doc_full_report": "### 🌍 宏观诊断与全球阵地推演\\n(此处写入深度分析...)"
 }}
     """
     response = client.models.generate_content(
@@ -239,34 +259,42 @@ def update_google_doc(creds, report_text: str, target_doc_id: str) -> str:
     return f"https://docs.google.com/document/d/{target_doc_id}/edit"
 
 # ==========================================
-# 6. 企业微信终极排版拼接 (纯硬数据直推)
+# 6. 企业微信终极排版拼接 (Python完美缝合)
 # ==========================================
-def notify_wechat(macro_str, hard_data_list, ai_summary, orders_list, doc_link):
+def notify_wechat(macro_str, hard_data_dict, ai_summary, fund_decisions, doc_link):
     robot_key = os.environ.get("WECHAT_ROBOT_KEY")
     if not robot_key: return
 
-    hard_data_block = "\n".join([f"- {line}" for line in hard_data_list])
+    orders_list = []
+    # 遍历我们抓取的所有硬数据基金
+    for fund_name, hard_str in hard_data_dict.items():
+        # 获取 AI 的决策，如果 AI 漏了，给个默认值
+        decision = fund_decisions.get(fund_name, {"action": "观望", "reason": "维持既定策略。"})
+        act = decision.get("action", "观望")
+        rsn = decision.get("reason", "")
+        
+        # 智能匹配警报 Emoji
+        icon = "🟢"
+        if any(x in act for x in ["清仓", "止损", "卖出", "减仓"]): icon = "🚨"
+        elif any(x in act for x in ["买入", "加仓", "建仓", "定投"]): icon = "🔥"
+        
+        # 终极缝合：状态图标 + 名称 + 动作 + 硬数据列阵 + AI理由
+        orders_list.append(f"{icon} **{fund_name}**：{act} | {hard_str} {rsn}")
     
-    if not orders_list:
-        orders_str = "> 🟢 全阵地状态稳定，今日无极值操作动作。"
-    else:
-        orders_str = "\n".join([f"> {o}" for o in orders_list])
+    orders_block = "\n".join([f"- {o}" for o in orders_list])
     
-    content = f"""🚀 **V4.0 战术中枢 | 14:45 盘中快照**
+    content = f"""🚀 **V4.0 战术中枢 | 14:45 全阵地快照**
 
-🌍 **宏观水位**:
+🌍 **全球水位**:
 `{macro_str}`
 
-📊 **核心持仓矩阵**:
-{hard_data_block}
-
-🧠 **AI 决断**:
+🧠 **AI 首席决断**:
 > {ai_summary}
 
-⚡ **立即执行指令**:
-{orders_str}
+⚡ **全阵地扫描与指令**:
+{orders_block}
 
-🔗 **[点击查阅深度宏观复盘日记]({doc_link})**"""
+🔗 **[点击查阅深度穿透研报]({doc_link})**"""
 
     payload = {"msgtype": "markdown", "markdown": {"content": content}}
     try:
@@ -279,17 +307,12 @@ if __name__ == "__main__":
     creds = get_google_credentials()
     gc = gspread.authorize(creds)
     
-    # 获取硬数据、宏观数据，以及高度结构化的机器学习状态数据
-    md_prompt, rules_str, macro_str, hard_data_list, macro_raw_dict, portfolio_raw_list = collect_v4_intelligence(gc)
-    
-    # 呼叫 AI 决策
+    md_prompt, rules_str, macro_str, hard_data_dict, macro_raw_dict, portfolio_raw_list = collect_v4_intelligence(gc)
     ai_json = ask_v4_tactical_agent(md_prompt, rules_str)
     
-    # 写入 Docs 和推微信
     doc_link = update_google_doc(creds, ai_json["doc_full_report"], MY_DOC_ID)
-    notify_wechat(macro_str, hard_data_list, ai_json["ai_summary"], ai_json["execution_orders"], doc_link)
+    notify_wechat(macro_str, hard_data_dict, ai_json["ai_summary"], ai_json.get("fund_decisions", {}), doc_link)
     
-    # 🗄️ 拼装给未来的终极机器学习 JSON 语料库
     archive_json = {
         "timestamp": datetime.datetime.now(pytz.timezone('Asia/Shanghai')).strftime('%Y-%m-%d %H:%M:%S'),
         "state_macro": macro_raw_dict,
