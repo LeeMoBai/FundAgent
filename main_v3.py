@@ -32,7 +32,7 @@ def get_gspread_client():
     return gspread.service_account_from_dict(json.loads(creds_json))
 
 # ==========================================
-# 1. 抓取外围宏观数据 (YFinance)
+# 1. 抓取外围宏观数据 (包含隐藏的 QDII 锚点)
 # ==========================================
 def get_macro_v3() -> tuple:
     tactical_macro = {}
@@ -43,7 +43,8 @@ def get_macro_v3() -> tuple:
         "KOSPI": "^KS11", 
         "黄金(XAU)": "GC=F", 
         "纳指(NQ)": "NQ=F", 
-        "XBI": "XBI"
+        "XBI": "XBI",
+        "IXIC_Hidden": "^IXIC" # 🎯 隐蔽抓取纳指现货，用于 QDII 真实测算
     }
     
     for display_name, symbol in tickers_map.items():
@@ -52,27 +53,29 @@ def get_macro_v3() -> tuple:
             if len(data) >= 2:
                 closes = data['Close'].tolist()
                 pct_chg = ((closes[-1] - closes[-2]) / closes[-2]) * 100
-                if "BTC" in display_name or "XAU" in display_name:
-                    tactical_macro[display_name] = f"${closes[-1]:,.0f}({pct_chg:+.2f}%)"
-                elif "US10Y" in display_name:
-                    tactical_macro[display_name] = f"{closes[-1]:.2f}%({pct_chg:+.2f}%)"
-                else:
-                    tactical_macro[display_name] = f"{closes[-1]:.0f}({pct_chg:+.2f}%)"
+                
+                # 只有非隐藏的标的才显示在宏观快照里
+                if display_name != "IXIC_Hidden":
+                    if "BTC" in display_name or "XAU" in display_name:
+                        tactical_macro[display_name] = f"${closes[-1]:,.0f}({pct_chg:+.2f}%)"
+                    elif "US10Y" in display_name:
+                        tactical_macro[display_name] = f"{closes[-1]:.2f}%({pct_chg:+.2f}%)"
+                    else:
+                        tactical_macro[display_name] = f"{closes[-1]:.0f}({pct_chg:+.2f}%)"
+                        
                 strategic_macro[symbol] = {"current": closes[-1], "daily_pct": pct_chg}
             else:
-                tactical_macro[display_name] = "N/A"
+                if display_name != "IXIC_Hidden": tactical_macro[display_name] = "N/A"
         except:
-            tactical_macro[display_name] = "盲区"
+            if display_name != "IXIC_Hidden": tactical_macro[display_name] = "盲区"
             
     return tactical_macro, strategic_macro
 
 # ==========================================
-# 2. 抓取 ETF (引入腾讯极速接口，绝对真实)
+# 2. 抓取 ETF (腾讯极速接口)
 # ==========================================
 def get_realtime_etf_features(proxy_code: str) -> dict:
     features = {"today_pct": 0.0, "tactical_desc": "无量价数据", "5d_vol_ratios": [], "ma250_dist": 0.0}
-    
-    # 🎯 步骤 1：使用腾讯底层 API 抓取绝对真实的实时涨跌幅 (0延迟，绝不报错)
     try:
         prefix = "sh" if proxy_code.startswith("5") else "sz"
         url = f"http://qt.gtimg.cn/q={prefix}{proxy_code}"
@@ -81,17 +84,12 @@ def get_realtime_etf_features(proxy_code: str) -> dict:
         if len(data) > 32:
             features["today_pct"] = round(float(data[32]), 2)
     except:
-        pass # 如果腾讯也挂了，涨跌幅显示 0.0
+        pass 
 
-    # 🎯 步骤 2：使用 AkShare 抓取历史数据计算量比与乖离率
     try:
         hist_df = fetch_with_timeout(ak.fund_etf_hist_em, 4, symbol=proxy_code, period="daily")
         if len(hist_df) >= 2:
             vols = hist_df.tail(6)['成交额'].tolist()
-            if len(hist_df) >= 20:
-                ma250 = hist_df.tail(250)['收盘'].mean()
-                features["ma250_dist"] = round(((hist_df.iloc[-1]['收盘'] - ma250) / ma250) * 100, 2)
-            
             ratios = [round(vols[i]/vols[i-1], 2) if vols[i-1]>0 else 1.0 for i in range(1, len(vols))]
             features["5d_vol_ratios"] = ratios
             last_ratio = ratios[-1]
@@ -110,8 +108,6 @@ def collect_v3_intelligence(gc) -> tuple:
     sh = gc.open("基金净值总结")
     tac_macro, strat_macro = get_macro_v3()
     
-    print("   [+] 启动腾讯+东方财富双引擎穿透式抓取...")
-    
     dash_data = sh.worksheet("Dashboard").get_all_values()
     headers = dash_data[0]
     def get_idx(kw): return next((i for i, h in enumerate(headers) if kw in h), -1)
@@ -127,39 +123,64 @@ def collect_v3_intelligence(gc) -> tuple:
         proxy = re.search(r'\d{6}', row[get_idx("替身代码")] if get_idx("替身代码") != -1 else "").group(0) if re.search(r'\d{6}', row[get_idx("替身代码")] if get_idx("替身代码") != -1 else "") else ""
         rule = row[get_idx("战术纪律")] if get_idx("战术纪律") != -1 else ""
         
+        # 🎯 修复仓位读取，兼容 QDII 净值延迟
         try:
-            shares = float(re.sub(r'[^\d.]', '', row[get_idx("持有份额")]))
-            nav = float(re.sub(r'[^\d.]', '', row[get_idx("最新净值")]))
+            s_str = row[get_idx("持有份额")] if get_idx("持有份额") != -1 else ""
+            shares = float(re.sub(r'[^\d.]', '', s_str)) if re.sub(r'[^\d.]', '', s_str) else 0.0
+            
+            n_str = row[get_idx("最新净值")] if get_idx("最新净值") != -1 else ""
+            nav = float(re.sub(r'[^\d.]', '', n_str)) if re.sub(r'[^\d.]', '', n_str) else 0.0
+            if nav == 0.0:
+                p_str = row[get_idx("前一日净值")] if get_idx("前一日净值") != -1 else ""
+                nav = float(re.sub(r'[^\d.]', '', p_str)) if re.sub(r'[^\d.]', '', p_str) else 0.0
+            if nav == 0.0:
+                c_str = row[get_idx("持仓成本")] if get_idx("持仓成本") != -1 else ""
+                nav = float(re.sub(r'[^\d.]', '', c_str)) if re.sub(r'[^\d.]', '', c_str) else 0.0
+                
             val = shares * nav
             pos_str = f"¥{val/1000:.1f}k" if val > 0 else "¥0"
         except:
             pos_str = "未知"
 
         if rule: tactical_rules.append(f"- **{name}**：{rule}")
-        # 强制 AI 把废话省在执行单里
         exec_template.append(f"- **{name}**：[指令] | ￥[金额] | [理由(极简15字内)。[证伪]:限8字]")
         
-        if proxy:
-            features = get_realtime_etf_features(proxy)
-            pct = features["today_pct"]
-            tactical_etfs.append(f"* **{name}**({proxy}): {pct:+.2f}% | 仓:{pos_str} | {features['tactical_desc']}")
-            strategic_archive["active_positions"].append({"name": name, "proxy": proxy, "today_pct": pct})
+        # 🎯 核心逻辑：中美脱钩！(识别纳斯达克等 QDII 资产)
+        if "纳斯达克" in name or "标普" in name:
+            ixic_pct = strat_macro.get("^IXIC", {}).get("daily_pct", 0.0)
+            nq_pct = strat_macro.get("NQ=F", {}).get("daily_pct", 0.0)
+            tactical_etfs.append(f"* **{name}**: 昨夜 {ixic_pct:+.2f}% | 期指 {nq_pct:+.2f}% | 仓:{pos_str}")
+            strategic_archive["active_positions"].append({"name": name, "today_pct": ixic_pct, "is_qdii": True})
+        else:
+            if proxy:
+                features = get_realtime_etf_features(proxy)
+                pct = features["today_pct"]
+                tactical_etfs.append(f"* **{name}**({proxy}): {pct:+.2f}% | 仓:{pos_str} | {features['tactical_desc']}")
+                strategic_archive["active_positions"].append({"name": name, "proxy": proxy, "today_pct": pct})
 
+    # 🎯 雷达池读取 Bug 彻底修复：使用专属表头
     tactical_radar = []
     try:
         radar_data = sh.worksheet("雷达监控").get_all_values()
+        r_headers = radar_data[0]
+        def r_idx(kw): return next((i for i, h in enumerate(r_headers) if kw in h), -1)
+        
         for row in radar_data[1:]:
             if not row or not any(row): continue
-            r_name = row[get_idx("板块名称")]
-            r_proxy = re.search(r'\d{6}', row[get_idx("替身代码")]).group(0) if re.search(r'\d{6}', row[get_idx("替身代码")]) else ""
-            r_trigger = row[get_idx("狙击触发条件")]
+            r_name = row[r_idx("板块名称")] if r_idx("板块名称") != -1 else ""
+            r_proxy_raw = row[r_idx("替身代码")] if r_idx("替身代码") != -1 else ""
+            r_proxy = re.search(r'\d{6}', r_proxy_raw).group(0) if re.search(r'\d{6}', r_proxy_raw) else ""
+            r_trigger = row[r_idx("狙击触发条件")] if r_idx("狙击触发条件") != -1 else ""
+            
             if r_proxy:
                 features = get_realtime_etf_features(r_proxy)
                 tactical_radar.append(f"* **{r_name}**: {features['today_pct']:+.2f}% | 🎯扳机: {r_trigger}")
-    except: pass
+    except Exception as e: 
+        print(f"   [!] 雷达池读取异常: {e}")
+        pass
 
     etfs_str = "\n".join(tactical_etfs) if tactical_etfs else "暂无数据。"
-    radar_str = "\n".join(tactical_radar) if tactical_radar else "空。"
+    radar_str = "\n".join(tactical_radar) if tactical_radar else "无配置标的。"
     
     md_prompt = f"""## 🌍 宏观水位
 {macro_str}
@@ -173,13 +194,13 @@ def collect_v3_intelligence(gc) -> tuple:
     return md_prompt, "\n".join(tactical_rules), "\n".join(exec_template), strategic_archive
 
 # ==========================================
-# 4. AI 顶级大脑 (恢复研报级含金量)
+# 4. AI 顶级大脑
 # ==========================================
 def ask_v3_tactical_agent(md_prompt: str, rules_str: str, exec_str: str) -> str:
     client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
     prompt = f"""
 # Role: V3.0 顶级场外基金量化大脑 (Midday Agent)
-当前14:45，基于数据进行兼具深度与纪律的决断。
+当前14:45，基于数据进行兼具深度与纪律的决断。特别注意：对于纳斯达克等QDII资产，已向你展示昨夜真实浮盈与当后期指，请结合期指推演今晚情绪。
 
 【输入情报】：
 {md_prompt}
@@ -187,13 +208,13 @@ def ask_v3_tactical_agent(md_prompt: str, rules_str: str, exec_str: str) -> str:
 {rules_str}
 
 # Output Format：
-【排版红线】：[执行单]的理由与证伪必须严格精简！但你可以把省下来的字数，全部投入到【宏观诊断】和【阵地推演】的深度分析中，恢复你顶级分析师的含金量！
+【排版红线】：[执行单]的理由与证伪必须严格精简！但你可以把省下来的字数，全部投入到【宏观诊断】和【阵地推演】的深度分析中。
 
 ### 🌍 [宏观主线诊断]
-(结合宏观数据深度剖析全球流动性预期与A股资金高低切换逻辑，展现深度洞察力，约 150-200 字)
+(结合宏观数据深度剖析全球流动性预期与资金高低切换逻辑，约 150 字)
 
 ### 🧠 [阵地推演]
-(深度推演今日战术重心、防守反击逻辑与机会成本，约 150 字)
+(深度推演今日战术重心、防守反击逻辑，约 150 字)
 
 ### 📝 [15:00 执行单]
 {exec_str}
@@ -223,15 +244,13 @@ def archive_and_notify(md_prompt: str, ai_decision: str, strategic_json: dict):
     robot_key = os.environ.get("WECHAT_ROBOT_KEY")
     if robot_key:
         full_content = f"{md_prompt}\n====================\n\n{ai_decision}"
-        
-        # 释放微信空间，给予推演小作文更大的容错率 (4096 字节极限，我们卡在 3900)
         if len(full_content.encode('utf-8')) > 3900:
             full_content = full_content[:1250] + "\n\n...(字数触及上限，安全截断)"
             
         payload = {
             "msgtype": "markdown", 
             "markdown": {
-                "content": f"🚀 **V3.0 盘中决策 (含金量拉满版)**\n\n{full_content}"
+                "content": f"🚀 **V3.0 盘中决策 (脱钩满血版)**\n\n{full_content}"
             }
         }
         try:
