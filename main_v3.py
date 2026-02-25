@@ -20,12 +20,11 @@ def get_gspread_client():
     return gspread.service_account_from_dict(json.loads(creds_json))
 
 # ==========================================
-# 1. 抓取宏观数据 (定制化命名)
+# 1. 抓取宏观数据 (经典命名)
 # ==========================================
 def get_macro_v3() -> tuple:
     tactical_macro = {}
     strategic_macro = {}
-    # 按照你的 V2.2 经典命名对照表
     tickers_map = {
         "10年期美债 (US10Y)": "^TNX", 
         "比特币 (BTC)": "BTC-USD", 
@@ -49,9 +48,7 @@ def get_macro_v3() -> tuple:
                 else:
                     tactical_macro[display_name] = f"{closes[-1]:.2f} ({pct_chg:+.2f}%)"
                 
-                # JSON用短Key
-                short_key = symbol
-                strategic_macro[short_key] = {"current": closes[-1], "daily_pct": pct_chg, "5d_trend": [round(x, 3) for x in closes]}
+                strategic_macro[symbol] = {"current": closes[-1], "daily_pct": pct_chg, "5d_trend": [round(x, 3) for x in closes]}
             else:
                 tactical_macro[display_name] = "N/A"
         except:
@@ -60,44 +57,63 @@ def get_macro_v3() -> tuple:
     return tactical_macro, strategic_macro
 
 # ==========================================
-# 2. 抓取 ETF 5日量价 (YFinance 双擎容灾)
+# 2. 抓取 ETF 实时涨跌幅 + 5日量价 (彻底修复数据滞后)
 # ==========================================
-def get_etf_5d_features(proxy_code: str) -> dict:
-    features = {"today_pct": 0.0, "is_abnormal_vol": False, "tactical_desc": "温和平量", "5d_prices": [], "5d_vol_ratios": [], "ma250_dist": 0.0}
-    try:
-        hist_df = ak.fund_etf_hist_em(symbol=proxy_code, period="daily")
-        if len(hist_df) < 2: raise ValueError()
-        vols = hist_df.tail(6)['成交额'].tolist()
-        prices = hist_df.tail(6)['收盘'].tolist()
-    except:
+def get_realtime_etf_features(proxy_code: str, spot_df: pd.DataFrame) -> dict:
+    features = {"today_pct": 0.0, "tactical_desc": "温和平量", "5d_vol_ratios": [], "ma250_dist": 0.0}
+    
+    # 🎯 步骤 A：获取当天的【实时涨跌幅】
+    real_time_pct = None
+    if not spot_df.empty:
+        match = spot_df[spot_df["代码"] == proxy_code]
+        if not match.empty:
+            real_time_pct = float(match.iloc[0]['涨跌幅'])
+            
+    # 如果 akshare 盘口失效，用 YFinance 拉取最近 2 天的数据测算实时涨跌
+    if real_time_pct is None:
         try:
             suffix = ".SS" if proxy_code.startswith("5") else ".SZ"
-            df_yf = yf.Ticker(f"{proxy_code}{suffix}").history(period="6d")
-            if len(df_yf) < 2: raise ValueError()
-            vols = df_yf['Volume'].tolist()
-            prices = df_yf['Close'].tolist()
+            yf_data = yf.Ticker(f"{proxy_code}{suffix}").history(period="2d")
+            if len(yf_data) >= 2:
+                current_price = yf_data['Close'].iloc[-1]
+                prev_close = yf_data['Close'].iloc[-2]
+                real_time_pct = ((current_price - prev_close) / prev_close) * 100
+            else:
+                real_time_pct = 0.0
         except:
-            features["tactical_desc"] = "数据盲区"
-            return features
+            real_time_pct = 0.0
+            
+    features["today_pct"] = round(real_time_pct, 2)
 
-    pct = ((prices[-1] - prices[-2]) / prices[-2]) * 100
-    features["today_pct"] = round(pct, 2)
-    
-    ratios = [round(vols[i]/vols[i-1], 2) if vols[i-1]>0 else 1.0 for i in range(1, len(vols))]
-    features["5d_prices"] = [round(p, 3) for p in prices[1:]]
-    features["5d_vol_ratios"] = ratios
-    
-    if ratios[-1] > 1.2: features["tactical_desc"] = f"放量 (量比 {ratios[-1]})"
-    elif ratios[-1] < 0.8: features["tactical_desc"] = f"缩量回踩 (量比 {ratios[-1]})"
+    # 🎯 步骤 B：获取历史量价计算【量比】与【250日乖离率】
+    try:
+        hist_df = ak.fund_etf_hist_em(symbol=proxy_code, period="daily")
+        if len(hist_df) >= 20:
+            ma250 = hist_df.tail(250)['收盘'].mean()
+            features["ma250_dist"] = round(((hist_df.iloc[-1]['收盘'] - ma250) / ma250) * 100, 2)
+            
+        vols = hist_df.tail(6)['成交额'].tolist()
+        ratios = [round(vols[i]/vols[i-1], 2) if vols[i-1]>0 else 1.0 for i in range(1, len(vols))]
+        features["5d_vol_ratios"] = ratios
         
+        if ratios and ratios[-1] > 1.2: features["tactical_desc"] = f"放量 (量比 {ratios[-1]})"
+        elif ratios and ratios[-1] < 0.8: features["tactical_desc"] = f"缩量回踩 (量比 {ratios[-1]})"
+    except:
+        features["tactical_desc"] = "量价分析盲区"
+
     return features
 
 # ==========================================
-# 3. 组装经典 V2.2 格式快照
+# 3. 组装经典快照
 # ==========================================
 def collect_v3_intelligence(gc) -> tuple:
     sh = gc.open("基金净值总结")
     tac_macro, strat_macro = get_macro_v3()
+    
+    # 提前拉取一次全市场实时盘口（避免重复请求导致封IP）
+    print("   [+] 拉取实时 ETF 盘口数据...")
+    try: etf_spot = ak.fund_etf_spot_em()
+    except: etf_spot = pd.DataFrame()
     
     dash_data = sh.worksheet("Dashboard").get_all_values()
     headers = dash_data[0]
@@ -106,9 +122,7 @@ def collect_v3_intelligence(gc) -> tuple:
     strategic_archive = {"macro_matrix": strat_macro, "active_positions": [], "radar_graveyard": []}
     tactical_etfs, tactical_rules, exec_template = [], [], []
 
-    # 解析宏观字符串
-    macro_str_list = [f"* **{k}**: {v}" for k, v in tac_macro.items()]
-    macro_str = "\n".join(macro_str_list)
+    macro_str = "\n".join([f"* **{k}**: {v}" for k, v in tac_macro.items()])
 
     for row in dash_data[1:]:
         if not row or not str(row[0]).strip().isdigit(): continue
@@ -116,24 +130,22 @@ def collect_v3_intelligence(gc) -> tuple:
         proxy = re.search(r'\d{6}', row[get_idx("替身代码")] if get_idx("替身代码") != -1 else "").group(0) if re.search(r'\d{6}', row[get_idx("替身代码")] if get_idx("替身代码") != -1 else "") else ""
         rule = row[get_idx("战术纪律")] if get_idx("战术纪律") != -1 else ""
         
-        # 提取持仓金额 (份额 * 最新净值)
         try:
             shares = float(re.sub(r'[^\d.]', '', row[get_idx("持有份额")]))
             nav = float(re.sub(r'[^\d.]', '', row[get_idx("最新净值")]))
-            position_val = shares * nav
-            pos_str = f"¥{position_val:,.0f}"
+            pos_str = f"¥{shares * nav:,.0f}"
         except:
             pos_str = "未知"
 
         if rule: tactical_rules.append(f"- **{name}**：{rule}")
-        # 强制 AI 把理由和证伪压缩
-        exec_template.append(f"- **{name}**：[指令] | ￥[金额] | [理由：极简短句。证伪：限10字内短语]")
+        # 🎯 松绑字数限制：允许适中长度的理由与证伪条件
+        exec_template.append(f"- **{name}**：[指令] | ￥[金额] | [理由：一句话概括核心逻辑。[证伪条件]：精简设定防守/进攻点位]")
         
         if proxy:
-            features = get_etf_5d_features(proxy)
+            features = get_realtime_etf_features(proxy, etf_spot)
             pct = features["today_pct"]
             tactical_etfs.append(f"* **{name} ({proxy})**: 盘中 {pct:+.2f}% | 量价: [{features['tactical_desc']}] | **当前持仓: {pos_str}**")
-            strategic_archive["active_positions"].append({"name": name, "proxy": proxy, "today_pct": pct, "rule": rule})
+            strategic_archive["active_positions"].append({"name": name, "proxy": proxy, "today_pct": pct})
 
     tactical_radar = []
     try:
@@ -144,14 +156,13 @@ def collect_v3_intelligence(gc) -> tuple:
             r_proxy = re.search(r'\d{6}', row[get_idx("替身代码")]).group(0) if re.search(r'\d{6}', row[get_idx("替身代码")]) else ""
             r_trigger = row[get_idx("狙击触发条件")]
             if r_proxy:
-                features = get_etf_5d_features(r_proxy)
+                features = get_realtime_etf_features(r_proxy, etf_spot)
                 tactical_radar.append(f"* **{r_name} ({r_proxy})**: 盘中 {features['today_pct']:+.2f}% | 🎯扳机: {r_trigger}")
     except: pass
 
     etfs_str = "\n".join(tactical_etfs) if tactical_etfs else "暂无场内数据。"
     radar_str = "\n".join(tactical_radar) if tactical_radar else "雷达池未配置或为空。"
     
-    # 完美复现 V2.2 数据快照排版
     md_prompt = f"""## 🌍 1. 全球宏观水位 (Macro)
 {macro_str}
 
@@ -167,7 +178,7 @@ def collect_v3_intelligence(gc) -> tuple:
     return md_prompt, "\n".join(tactical_rules), "\n".join(exec_template), strategic_archive
 
 # ==========================================
-# 4. AI 经典排版决策大脑
+# 4. AI 适中深度决策大脑
 # ==========================================
 def ask_v3_tactical_agent(md_prompt: str, rules_str: str, exec_str: str) -> str:
     client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
@@ -180,17 +191,17 @@ def ask_v3_tactical_agent(md_prompt: str, rules_str: str, exec_str: str) -> str:
 【战术纪律】：
 {rules_str}
 
-# Output Format (必须严格遵守下方的排版与极简字数要求！)：
+# Output Format (排版要求：推演逻辑保持适中长度，既要深度剖析，又要避免长篇大论导致微信截断)：
 
 ### 🌍 [宏观与主线诊断 (14:45)]
-- **全球流动性**：(一句话概括美债与BTC流动性)
-- **A股盘面判定**：(一句话概括A股资金主线，禁写废话)
+- **全球流动性**：(约50字深度分析美债与BTC流动性预期)
+- **A股盘面判定**：(结合宏观映射，约100字深度判定A股主线逻辑)
 
 ### 🧠 [现役阵地概率推演与执行]
-(用一段话，结合可用资金和宏观水位，概括总体战术重心：是全面进攻还是防守反击)
+(结合可用资金和宏观水位，推演战术重心。保持适中长度，约150字)
 
 ### 📝 [15:00 申赎执行单]
-【核心警告：为防止微信截断，[理由]与[证伪]必须极度浓缩！证伪条件严禁写长句，只需写“破20日线”等几个字。】
+(每个执行单需包含指令、金额、理由与[证伪条件]。表述保持专业且紧凑)
 {exec_str}
 
 ### 🎯 [雷达池量化监控 (4万备用金)]
@@ -222,20 +233,20 @@ def archive_and_notify(md_prompt: str, ai_decision: str, strategic_json: dict):
     if robot_key:
         full_content = f"{md_prompt}\n========================================\n\n{ai_decision}"
         
-        # 安全截断，V2.2 格式较为冗长，设定在 3800 字节的极限边缘
-        if len(full_content.encode('utf-8')) > 3800:
-            full_content = full_content[:1150] + "\n\n...(字数超限截断，请留意核心指令)"
+        # 将安全截断阈值稍微放宽至 3900 字节，给适中长度的推演留足空间
+        if len(full_content.encode('utf-8')) > 3900:
+            full_content = full_content[:1200] + "\n\n...(推演逻辑触及微信安全上限，已被保护性截断)"
             
         payload = {
             "msgtype": "markdown", 
             "markdown": {
-                "content": f"🚀 **V3.0 盘中决策 (经典再现版)**\n\n{full_content}"
+                "content": f"🚀 **V3.0 盘中决策 (实战满血版)**\n\n{full_content}"
             }
         }
         try:
             url = f"https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key={robot_key}"
             requests.post(url, json=payload)
-            print("📡 企微推送成功！(经典格式已回归)")
+            print("📡 企微推送成功！(实时数据 + 适中推演)")
         except Exception as e:
             print(f"❌ 企微网络异常: {e}")
 
