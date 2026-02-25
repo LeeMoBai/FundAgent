@@ -72,12 +72,12 @@ def get_etf_eod_data(proxy_code: str):
     return result
 
 # ==========================================
-# 3. 执行静默写入与历史归档任务
+# 3. 执行静默写入与历史归档任务 (支持双表 MA20/MA60)
 # ==========================================
 def run_eod_settlement():
     print("🌙 启动 V4.1 EOD 静默后勤清算系统...")
     gc = get_gspread_client()
-    sh = gc.open_by_key("请填入您的表格ID") # <--- 请在这里填入您的物理乱码 ID
+    sh = gc.open_by_key("请填入您的表格ID") # <--- 记得填您的 ID
     
     # --- 任务 A: 刷新 Dashboard ---
     ws_dash = sh.worksheet("Dashboard")
@@ -90,10 +90,11 @@ def run_eod_settlement():
     idx_close = headers.index("[EOD]昨收盘价") if "[EOD]昨收盘价" in headers else -1
     idx_vol = headers.index("[EOD]昨成交额") if "[EOD]昨成交额" in headers else -1
     idx_ma20 = headers.index("[EOD]MA20点位") if "[EOD]MA20点位" in headers else -1
+    idx_ma60 = headers.index("[EOD]MA60点位") if "[EOD]MA60点位" in headers else -1
 
     updates = []
-    eod_json_state = {} # 用于存储绝对准确的盘后数据给AI复盘
-    nav_dict = {} # 用于存入 History 表
+    eod_json_state = {} 
+    nav_dict = {} 
     
     for row_idx, row in enumerate(dash_data[1:], start=2):
         if not row or (idx_fund != -1 and not row[idx_fund].strip().isdigit()): continue
@@ -106,7 +107,6 @@ def run_eod_settlement():
         
         fund_state = {}
         
-        # 1. 抓取真实净值
         if fund_code and idx_nav != -1:
             nav = get_fund_nav(fund_code)
             if nav != "":
@@ -114,50 +114,69 @@ def run_eod_settlement():
                 fund_state["final_nav"] = nav
                 nav_dict[fund_code] = nav
         
-        # 2. 抓取 ETF 盘后数据
         if proxy_code:
             eod = get_etf_eod_data(proxy_code)
-            if eod["close"] != "" and idx_close != -1:
-                updates.append({'range': rowcol_to_a1(row_idx, idx_close + 1), 'values': [[eod["close"]]]})
-                fund_state["etf_close"] = eod["close"]
-            if eod["vol"] != "" and idx_vol != -1:
-                updates.append({'range': rowcol_to_a1(row_idx, idx_vol + 1), 'values': [[eod["vol"]]]})
-            if eod["ma20"] != "" and idx_ma20 != -1:
-                updates.append({'range': rowcol_to_a1(row_idx, idx_ma20 + 1), 'values': [[eod["ma20"]]]})
+            if eod["close"] != "" and idx_close != -1: updates.append({'range': rowcol_to_a1(row_idx, idx_close + 1), 'values': [[eod["close"]]]})
+            if eod["vol"] != "" and idx_vol != -1: updates.append({'range': rowcol_to_a1(row_idx, idx_vol + 1), 'values': [[eod["vol"]]]})
+            if eod["ma20"] != "" and idx_ma20 != -1: updates.append({'range': rowcol_to_a1(row_idx, idx_ma20 + 1), 'values': [[eod["ma20"]]]})
+            if eod["ma60"] != "" and idx_ma60 != -1: updates.append({'range': rowcol_to_a1(row_idx, idx_ma60 + 1), 'values': [[eod["ma60"]]]})
         
         eod_json_state[fund_name] = fund_state
         time.sleep(0.5)
 
     if updates:
         ws_dash.batch_update(updates)
-        print(f"   [√] Dashboard 核心阵地已填满明天的弹药！")
+        print(f"   [√] Dashboard 核心阵地更新完毕！")
 
-    # --- 任务 B: 自动追加 History 表 ---
+    # --- 任务 B: 刷新 雷达监控 (新增) ---
+    try:
+        ws_radar = sh.worksheet("雷达监控")
+        radar_data = ws_radar.get_all_values()
+        r_headers = radar_data[0]
+        r_idx_proxy = r_headers.index("替身代码") if "替身代码" in r_headers else -1
+        r_idx_ma20 = r_headers.index("[EOD]MA20点位") if "[EOD]MA20点位" in r_headers else -1
+        r_idx_ma60 = r_headers.index("[EOD]MA60点位") if "[EOD]MA60点位" in r_headers else -1
+        
+        r_updates = []
+        for row_idx, row in enumerate(radar_data[1:], start=2):
+            if not row or not any(row): continue
+            r_proxy_raw = row[r_idx_proxy].strip() if r_idx_proxy != -1 else ""
+            r_proxy_code = re.search(r'\d{6}', r_proxy_raw).group(0) if re.search(r'\d{6}', r_proxy_raw) else ""
+            
+            if r_proxy_code:
+                eod = get_etf_eod_data(r_proxy_code)
+                if eod["ma20"] != "" and r_idx_ma20 != -1: r_updates.append({'range': rowcol_to_a1(row_idx, r_idx_ma20 + 1), 'values': [[eod["ma20"]]]})
+                if eod["ma60"] != "" and r_idx_ma60 != -1: r_updates.append({'range': rowcol_to_a1(row_idx, r_idx_ma60 + 1), 'values': [[eod["ma60"]]]})
+                time.sleep(0.5)
+        
+        if r_updates:
+            ws_radar.batch_update(r_updates)
+            print(f"   [√] 雷达监控 均线数据更新完毕！")
+    except Exception as e:
+        print(f"   [!] 雷达监控 更新异常: {e}")
+
+    # --- 任务 C: 自动追加 History 表 ---
     try:
         ws_hist = sh.worksheet("History")
         hist_data = ws_hist.get_all_values()
         if len(hist_data) >= 2:
-            fund_codes_in_hist = hist_data[1] # 第二行是基金代码
+            fund_codes_in_hist = hist_data[1]
             new_row = [datetime.datetime.now(pytz.timezone('Asia/Shanghai')).strftime('%Y-%m-%d')]
-            for code in fund_codes_in_hist[1:]: # 跳过第一列的"日期"
+            for code in fund_codes_in_hist[1:]:
                 new_row.append(nav_dict.get(code.strip(), ""))
-            
-            ws_hist.insert_row(new_row, 3) # 插在第3行（最新的数据在最上面）
+            ws_hist.insert_row(new_row, 3) 
             print("   [√] 历史净值曲线表 (History) 追加成功！")
     except Exception as e:
         print(f"   [!] History 表更新异常: {e}")
 
-    # --- 任务 C: 生成供 AI 复盘用的绝对结算 JSON ---
+    # 生成绝对结算 JSON
     archive_json = {
         "timestamp": datetime.datetime.now(pytz.timezone('Asia/Shanghai')).strftime('%Y-%m-%d %H:%M:%S'),
-        "type": "EOD_MARKET_STATE",
-        "description": "这是盘后真实结算数据，供周末/月末宏观复盘使用",
         "portfolio_eod": eod_json_state
     }
     os.makedirs("logs", exist_ok=True)
     with open(f"logs/EOD_State_{datetime.datetime.now().strftime('%Y%m%d')}.json", "w", encoding="utf-8") as f:
         json.dump(archive_json, f, ensure_ascii=False, indent=2)
-
     print("✅ EOD 结算全部完成！")
 
 if __name__ == "__main__":
