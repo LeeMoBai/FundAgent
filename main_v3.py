@@ -223,7 +223,7 @@ def ask_v3_tactical_agent(md_prompt: str, rules_str: str, exec_str: str) -> str:
     return response.text
 
 # ==========================================
-# 5. 落盘归档与企微拼接推送
+# 5. 落盘归档与企微拼接推送 (严格防截断版)
 # ==========================================
 def archive_and_notify(md_prompt: str, ai_decision: str, strategic_json: dict):
     tz_bj = pytz.timezone('Asia/Shanghai')
@@ -240,12 +240,13 @@ def archive_and_notify(md_prompt: str, ai_decision: str, strategic_json: dict):
 
     robot_key = os.environ.get("WECHAT_ROBOT_KEY")
     if robot_key:
-        # 🎯 核心修改：把 md_prompt（数据快照）和 ai_decision（推演结论）强力拼接在一起发给微信
         full_content = f"{md_prompt}\n---\n{ai_decision}"
         
-        # 增加长度保护，防止内容过长微信吞字
-        if len(full_content) > 3900:
-            full_content = full_content[:3900] + "\n\n...(部分内容因长度截断)"
+        # 🎯 核心修复：按照字节(Bytes)来计算长度，一个汉字3个字节。
+        # 预留大概 150 个字节给标题和微信内部标签，设定安全线为 3800 字节。
+        if len(full_content.encode('utf-8')) > 3800:
+            # 如果超长，我们保守截取前 1100 个字符（约3300字节），绝对安全
+            full_content = full_content[:1100] + "\n\n...(内容过长，已被战术截断以保证推送)"
             
         payload = {
             "msgtype": "markdown", 
@@ -255,8 +256,14 @@ def archive_and_notify(md_prompt: str, ai_decision: str, strategic_json: dict):
         }
         try:
             url = f"https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key={robot_key}"
-            requests.post(url, json=payload)
-            print("📡 企微推送成功！(含完整数据与深度推演)")
+            res = requests.post(url, json=payload)
+            res_data = res.json() # 抓取微信真实的返回数据
+            
+            # 🎯 核心诊断：只有 errcode 为 0 才是真成功
+            if res_data.get("errcode") == 0:
+                print("📡 企微推送成功！(含完整数据与深度推演)")
+            else:
+                print(f"❌ 企微拒绝发送！错误码: {res_data.get('errcode')}, 微信官方解释: {res_data.get('errmsg')}")
         except Exception as e:
             print(f"❌ 企微推送网络异常: {e}")
 
