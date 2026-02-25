@@ -9,235 +9,158 @@ import yfinance as yf
 import requests
 import concurrent.futures
 import time
+import re
 
 # ==========================================
-# 0. 基础设置与全能防弹衣
-# ==========================================
-def fetch_with_timeout(func, timeout_sec, *args, **kwargs):
-    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-        future = executor.submit(func, *args, **kwargs)
-        try:
-            return future.result(timeout=timeout_sec)
-        except Exception:
-            return None
-
-def get_gspread_client():
-    creds_json = os.environ.get("GCP_SERVICE_ACCOUNT")
-    if not creds_json:
-        raise ValueError("缺失 GCP_SERVICE_ACCOUNT")
-    return gspread.service_account_from_dict(json.loads(creds_json))
-
-# ==========================================
-# 1. 获取场外基金净值 (V4.5 天天+新浪双源狙击版)
+# 1. 获取场外基金净值 (V4.5 三源狙击：天天+雪球+东财网页)
 # ==========================================
 def get_fund_nav_data(fund_code: str, target_date: str):
     ts = int(time.time() * 1000)
-    tt_latest = "未知"
-    
-    # --- 渠道一：天天基金 (主攻) ---
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+    sources_log = []
+
+    # --- 渠道一：蛋卷基金 (雪球/DanJuan) - 响应速度通常极快 ---
+    try:
+        url_dj = f"https://danjuanfunds.com/djapi/fund/nav/history/{fund_code}?size=10"
+        resp_dj = requests.get(url_dj, headers=headers, timeout=5)
+        dj_data = resp_dj.json()
+        if dj_data and 'data' in dj_data and dj_data['data']['items']:
+            latest_item = dj_data['data']['items'][0]
+            # 蛋卷返回格式通常是 "2026-02-25"
+            f_date = latest_item['date']
+            if f_date == target_date:
+                return str(latest_item['value']), f_date
+            sources_log.append(f"雪球:{f_date}")
+    except: sources_log.append("雪球:异常")
+
+    # --- 渠道二：天天基金 (移动端 API) ---
     try:
         url_tt = f"https://fundmobapi.eastmoney.com/FundMNewApi/FundMNHisNetList?FCODE={fund_code}&pageIndex=1&pageSize=5&_={ts}"
-        resp = requests.get(url_tt, headers={"User-Agent": "Mozilla/5.0"}, timeout=4)
-        data = resp.json()
-        if data and 'Datas' in data and data['Datas']:
-            for item in data['Datas']:
+        resp_tt = requests.get(url_tt, headers=headers, timeout=5)
+        tt_data = resp_tt.json()
+        if tt_data and 'Datas' in tt_data and tt_data['Datas']:
+            for item in tt_data['Datas']:
                 f_date = item['FSRQ'].replace('/', '-')
                 if f_date == target_date:
                     return str(item['NAV']), f_date
-            tt_latest = data['Datas'][0]['FSRQ'].replace('/', '-')
-    except:
-        tt_latest = "接口异常"
+            sources_log.append(f"天天:{tt_data['Datas'][0]['FSRQ'].replace('/', '-')}")
+    except: sources_log.append("天天:异常")
 
-    # --- 渠道二：新浪财经 (补位) ---
+    # --- 渠道三：东方财富 (网页版底层 JS 接口) ---
     try:
-        url_sina = f"https://finance.sina.com.cn/fund/api/openapi.php/FundService.getFundNetValue?symbol={fund_code}"
-        resp_s = requests.get(url_sina, headers={"User-Agent": "Mozilla/5.0"}, timeout=4)
-        s_data = resp_s.json()
-        if s_data and 'result' in s_data and s_data['result']['data']:
-            s_item = s_data['result']['data']
-            s_date = s_item['fbrq'].replace('/', '-')
-            if s_date == target_date:
-                return str(s_item['jjjz']), s_date
-            sina_latest = s_date
-        else:
-            sina_latest = "未知"
-    except:
-        sina_latest = "接口异常"
+        url_web = f"http://fund.eastmoney.com/pingzhongdata/{fund_code}.js?v={datetime.datetime.now().strftime('%Y%m%d%H%M')}"
+        resp_web = requests.get(url_web, headers=headers, timeout=5)
+        # 网页版数据在 JS 变量 Data_netWorthTrend 中
+        match = re.search(r'Data_netWorthTrend = (\[.*?\]);', resp_web.text)
+        if match:
+            net_worth_data = json.loads(match.group(1))
+            if net_worth_data:
+                # 网页版通常是毫秒时间戳 [timestamp, nav, percentage, ...]
+                latest_item = net_worth_data[-1]
+                dt_object = datetime.datetime.fromtimestamp(latest_item['x'] / 1000, pytz.timezone('Asia/Shanghai'))
+                f_date = dt_object.strftime('%Y-%m-%d')
+                if f_date == target_date:
+                    return str(latest_item['y']), f_date
+                sources_log.append(f"东财网页:{f_date}")
+    except: sources_log.append("网页:异常")
 
-    return "", f"天天:{tt_latest} | 新浪:{sina_latest}"
+    return "", " | ".join(sources_log)
 
 # ==========================================
-# 2. 获取场内ETF盘后真实数据
+# 2. 获取场内ETF盘后真实数据 (保持不变)
 # ==========================================
 def get_etf_eod_data(proxy_code: str):
     result = {"close": "", "vol": "", "ma20": "", "ma60": "", "ma250": ""}
     if not proxy_code: return result
-
-    hist_df = fetch_with_timeout(ak.fund_etf_hist_em, 6, symbol=proxy_code, period="daily", adjust="qfq")
-    if hist_df is not None and len(hist_df) >= 2:
-        closes = [float(x) for x in hist_df['收盘'].tolist()]
-        result["close"] = closes[-1]
-        result["vol"] = float(hist_df.iloc[-1]['成交额'])
-        if len(closes) >= 20: result["ma20"] = round(sum(closes[-20:]) / 20.0, 4)
-        if len(closes) >= 60: result["ma60"] = round(sum(closes[-60:]) / 60.0, 4)
-        if len(closes) >= 250: result["ma250"] = round(sum(closes[-250:]) / 250.0, 4)
-        return result
-
-    suffix = ".SS" if proxy_code.startswith("5") else ".SZ"
-    df_yf = fetch_with_timeout(yf.Ticker(f"{proxy_code}{suffix}").history, 6, period="1y")
-    if df_yf is not None and len(df_yf) >= 2:
-        closes = df_yf['Close'].tolist()
-        result["close"] = round(closes[-1], 3)
-        result["vol"] = float(df_yf['Volume'].iloc[-1])
-        if len(closes) >= 20: result["ma20"] = round(sum(closes[-20:]) / 20.0, 4)
-        if len(closes) >= 60: result["ma60"] = round(sum(closes[-60:]) / 60.0, 4)
-        if len(closes) >= 250: result["ma250"] = round(sum(closes[-250:]) / 250.0, 4)
-        
+    try:
+        hist_df = fetch_with_timeout(ak.fund_etf_hist_em, 8, symbol=proxy_code, period="daily", adjust="qfq")
+        if hist_df is not None and len(hist_df) >= 2:
+            closes = [float(x) for x in hist_df['收盘'].tolist()]
+            result["close"] = closes[-1]
+            result["vol"] = float(hist_df.iloc[-1]['成交额'])
+            if len(closes) >= 20: result["ma20"] = round(sum(closes[-20:]) / 20.0, 4)
+            if len(closes) >= 60: result["ma60"] = round(sum(closes[-60:]) / 60.0, 4)
+            return result
+    except: pass
     return result
 
 # ==========================================
-# 3. 执行静默写入与历史归档任务 (智能可重入版)
+# 3. 执行静默写入任务 (V4.5 智能对账版)
 # ==========================================
 def run_eod_settlement():
     tz_bj = pytz.timezone('Asia/Shanghai')
     today_str = datetime.datetime.now(tz_bj).strftime('%Y-%m-%d')
-    print(f"🌙 启动 V4.3 EOD 静默后勤清算 (目标日期: {today_str})...")
+    print(f"🌙 启动 V4.5 EOD 结算系统 (目标日期: {today_str})...")
     
     gc = get_gspread_client()
-    sh = gc.open_by_key("1kKz9snuCeMSKwBCBGRBBUo8P-04C72Dx5Pt3ArYvtRw") # <--- 别忘了填您的 ID
+    sh = gc.open_by_key("1kKz9snuCeMSKwBCBGRBBUo8P-04C72Dx5Pt3ArYvtRw") 
     
-    # --- 任务 A: 刷新 Dashboard ---
     ws_dash = sh.worksheet("Dashboard")
     dash_data = ws_dash.get_all_values()
     headers = dash_data[0]
     
     def get_idx(kw): return next((i for i, h in enumerate(headers) if kw in h), -1)
-    
-    idx_fund = get_idx("基金代码")
-    idx_proxy = get_idx("替身代码")
-    idx_nav = get_idx("最新净值")
-    idx_close = get_idx("[EOD]昨收盘价")
-    idx_vol = get_idx("[EOD]昨成交额")
-    idx_ma20 = get_idx("[EOD]MA20")
-    idx_ma60 = get_idx("[EOD]MA60")
+    idx_fund = get_idx("基金代码"); idx_proxy = get_idx("替身代码"); idx_nav = get_idx("最新净值")
+    idx_close = get_idx("[EOD]昨收盘价"); idx_vol = get_idx("[EOD]昨成交额")
+    idx_ma20 = get_idx("[EOD]MA20"); idx_ma60 = get_idx("[EOD]MA60")
 
-    updates = []
-    eod_json_state = {} 
-    nav_dict = {} 
+    updates, eod_json_state, nav_dict = [], {}, {} 
     
     for row_idx, row in enumerate(dash_data[1:], start=2):
         fund_code_raw = str(row[idx_fund]).strip() if idx_fund != -1 else ""
-        if not fund_code_raw: continue
-        
+        if not fund_code_raw or not any(row): continue
         fund_code = fund_code_raw.zfill(6)
-        if not fund_code.isdigit(): continue
-            
         fund_name = row[get_idx("基金名称")]
         proxy_raw = row[idx_proxy].strip() if idx_proxy != -1 else ""
-        import re
         proxy_code = re.search(r'\d{6}', proxy_raw).group(0) if re.search(r'\d{6}', proxy_raw) else ""
         
-        fund_state = {}
+        # 三源抓取
+        nav, found_log = get_fund_nav_data(fund_code, today_str)
         
-        # 1. 抓取真实净值 (严格匹配今天)
-        nav, found_date = get_fund_nav_data(fund_code, today_str)
-        
-        if nav == "":
-            print(f"   [!] {fund_name} {today_str} 的净值尚未公布，跳过更新。")
-        else:
+        if nav:
             if idx_nav != -1: updates.append({'range': rowcol_to_a1(row_idx, idx_nav + 1), 'values': [[nav]]})
-            fund_state["final_nav"] = nav
             nav_dict[fund_code] = nav
+            print(f"   [√] {fund_name}: 成功捕获 {today_str} 净值 {nav}")
+        else:
+            print(f"   [!] {fund_name}: 数据源均未同步 ({found_log})")
         
-        # 2. 抓取 ETF 盘后数据
         if proxy_code:
             eod = get_etf_eod_data(proxy_code)
-            if eod["close"] != "" and idx_close != -1: updates.append({'range': rowcol_to_a1(row_idx, idx_close + 1), 'values': [[eod["close"]]]})
-            if eod["vol"] != "" and idx_vol != -1: updates.append({'range': rowcol_to_a1(row_idx, idx_vol + 1), 'values': [[eod["vol"]]]})
-            if eod["ma20"] != "" and idx_ma20 != -1: updates.append({'range': rowcol_to_a1(row_idx, idx_ma20 + 1), 'values': [[eod["ma20"]]]})
-            if eod["ma60"] != "" and idx_ma60 != -1: updates.append({'range': rowcol_to_a1(row_idx, idx_ma60 + 1), 'values': [[eod["ma60"]]]})
+            if eod["close"] != "": updates.append({'range': rowcol_to_a1(row_idx, idx_close + 1), 'values': [[eod["close"]]]})
+            if eod["vol"] != "": updates.append({'range': rowcol_to_a1(row_idx, idx_vol + 1), 'values': [[eod["vol"]]]})
+            if eod["ma20"] != "": updates.append({'range': rowcol_to_a1(row_idx, idx_ma20 + 1), 'values': [[eod["ma20"]]]})
+            if eod["ma60"] != "": updates.append({'range': rowcol_to_a1(row_idx, idx_ma60 + 1), 'values': [[eod["ma60"]]]})
         
-        eod_json_state[fund_name] = fund_state
-        time.sleep(0.5)
+        eod_json_state[fund_name] = {"nav": nav, "last_source": found_log}
+        time.sleep(0.3)
 
-    if updates:
-        ws_dash.batch_update(updates)
-        print(f"   [√] Dashboard 核心阵地更新完毕！")
-
-    # --- 任务 B: 刷新 雷达监控 ---
-    try:
-        ws_radar = sh.worksheet("雷达监控")
-        radar_data = ws_radar.get_all_values()
-        r_headers = radar_data[0]
-        def r_idx(kw): return next((i for i, h in enumerate(r_headers) if kw in h), -1)
-        
-        r_idx_proxy = r_idx("替身代码")
-        r_idx_ma20 = r_idx("[EOD]MA20")
-        r_idx_ma60 = r_idx("[EOD]MA60")
-        
-        r_updates = []
-        for row_idx, row in enumerate(radar_data[1:], start=2):
-            if not row or not any(row): continue
-            r_proxy_raw = row[r_idx_proxy].strip() if r_idx_proxy != -1 else ""
-            r_proxy_code = re.search(r'\d{6}', r_proxy_raw).group(0) if re.search(r'\d{6}', r_proxy_raw) else ""
-            
-            if r_proxy_code:
-                eod = get_etf_eod_data(r_proxy_code)
-                if eod["ma20"] != "" and r_idx_ma20 != -1: r_updates.append({'range': rowcol_to_a1(row_idx, r_idx_ma20 + 1), 'values': [[eod["ma20"]]]})
-                if eod["ma60"] != "" and r_idx_ma60 != -1: r_updates.append({'range': rowcol_to_a1(row_idx, r_idx_ma60 + 1), 'values': [[eod["ma60"]]]})
-                time.sleep(0.5)
-        
-        if r_updates:
-            ws_radar.batch_update(r_updates)
-            print(f"   [√] 雷达监控 均线数据更新完毕！")
-    except Exception as e:
-        print(f"   [!] 雷达监控 更新异常: {e}")
-
-    # --- 任务 C: 自动追加 History 表 (🛡️核心修复：智能可重入融合机制) ---
+    if updates: ws_dash.batch_update(updates)
+    
+    # --- History 智能填缝 ---
     try:
         ws_hist = sh.worksheet("History")
         hist_data = ws_hist.get_all_values()
         if len(hist_data) >= 2:
             fund_codes_in_hist = hist_data[1]
-            
-            # 判断第三行是否已经是今天的数据
-            is_today_exists = (len(hist_data) > 2 and hist_data[2][0] == today_str)
+            is_today_row_exists = (len(hist_data) > 2 and hist_data[2][0] == today_str)
             
             new_row = [today_str]
             for code in fund_codes_in_hist[1:]:
                 code_key = str(code).strip().zfill(6)
                 new_row.append(nav_dict.get(code_key, ""))
-                
-            if is_today_exists:
-                # 已经有今天的行了，启动智能填缝！
-                old_row = hist_data[2]
-                cells_to_update = []
+            
+            if is_today_row_exists:
+                final_updates = []
                 for i in range(1, len(new_row)):
-                    # 如果刚才没抓到新数据，但表格里原本有数据，就继承旧数据，绝不覆盖成空
-                    if new_row[i] == "" and i < len(old_row):
-                        new_row[i] = old_row[i]
-                    
-                    # 批量打包需要更新的格子
-                    cells_to_update.append({'range': rowcol_to_a1(3, i+1), 'values': [[new_row[i]]]})
-                    
-                if cells_to_update:
-                    ws_hist.batch_update(cells_to_update)
-                print("   [√] 历史净值表 (History) 今日行已存在，已执行智能填缝补漏！")
+                    if new_row[i] != "": final_updates.append({'range': rowcol_to_a1(3, i+1), 'values': [[new_row[i]]]})
+                if final_updates: ws_hist.batch_update(final_updates)
+                print("   [√] History 补漏完成。")
             else:
-                # 还没有今天的行，直接全新插入
                 ws_hist.insert_row(new_row, 3) 
-                print("   [√] 历史净值表 (History) 追加新日期成功！")
-    except Exception as e:
-        print(f"   [!] History 表更新异常: {e}")
+                print("   [√] History 新行插入完成。")
+    except Exception as e: print(f"   [!] History 更新异常: {e}")
 
-    # 生成绝对结算 JSON
-    archive_json = {
-        "timestamp": datetime.datetime.now(pytz.timezone('Asia/Shanghai')).strftime('%Y-%m-%d %H:%M:%S'),
-        "portfolio_eod": eod_json_state
-    }
-    os.makedirs("logs", exist_ok=True)
-    with open(f"logs/EOD_State_{datetime.datetime.now().strftime('%Y%m%d')}.json", "w", encoding="utf-8") as f:
-        json.dump(archive_json, f, ensure_ascii=False, indent=2)
     print("✅ EOD 结算全部完成！")
+
 if __name__ == "__main__":
     run_eod_settlement()
