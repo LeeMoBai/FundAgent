@@ -87,7 +87,7 @@ def run_eod_settlement():
     print(f"🌙 启动 V4.3 EOD 静默后勤清算 (目标日期: {today_str})...")
     
     gc = get_gspread_client()
-    sh = gc.open_by_key("请填入您的表格ID") # <--- 别忘了填您的 ID
+    sh = gc.open_by_key("1kKz9snuCeMSKwBCBGRBBUo8P-04C72Dx5Pt3ArYvtRw") # <--- 别忘了填您的 ID
     
     # --- 任务 A: 刷新 Dashboard ---
     ws_dash = sh.worksheet("Dashboard")
