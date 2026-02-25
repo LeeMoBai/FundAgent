@@ -182,10 +182,11 @@ def archive_and_notify(md_prompt: str, ai_decision: str, strategic_json: dict):
             # 如果超长，我们保守截取前 1100 个字符（约3300字节），绝对安全
             full_content = full_content[:1100] + "\n\n...(内容过长，已被战术截断以保证推送)"
             
+        # 🎯 彻底移除 <font> 标签，使用最纯净的 Markdown 格式，绝不给微信渲染引擎崩溃的机会
         payload = {
             "msgtype": "markdown", 
             "markdown": {
-                "content": f"<font color='warning'>**🚀 V3.0 盘中决策 (完整推演版)**</font>\n\n{full_content}"
+                "content": f"🚀 **V3.0 盘中决策 (完整推演版)**\n\n{full_content}"
             }
         }
         try:
