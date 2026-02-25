@@ -1,0 +1,29 @@
+name: V4.0 EOD Settlement (静默后勤兵)
+
+on:
+  schedule:
+    # 定时任务：周一至周五，UTC时间 14:30 (对应北京时间晚上 22:30)
+    - cron: '22 14 * * 1-5'
+  workflow_dispatch: # 保留这个按钮，允许您在 GitHub 网页上手动点击测试
+
+jobs:
+  run-eod-task:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: 📥 检出代码 (Checkout)
+        uses: actions/checkout@v3
+
+      - name: 🐍 配置 Python 环境
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: 📦 安装核心武器库 (Install Dependencies)
+        run: |
+          pip install gspread akshare yfinance requests pandas
+
+      - name: 🌙 执行 EOD 静默清算 (Run Script)
+        env:
+          GCP_SERVICE_ACCOUNT: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+        run: python eod_main_v4.py
