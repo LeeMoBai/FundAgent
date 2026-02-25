@@ -82,7 +82,7 @@ def get_macro_waterlevel():
     return " | ".join(macro_strs), macro_raw_dict
 
 # ==========================================
-# 2. 极速盘口与量比核算 (修复午休Bug)
+# 2. 极速盘口与量比核算
 # ==========================================
 def get_realtime_data(proxy_code: str, eod_vol_str: str):
     try:
@@ -104,23 +104,15 @@ def get_realtime_data(proxy_code: str, eod_vol_str: str):
                         now_bj = datetime.datetime.now(pytz.timezone('Asia/Shanghai'))
                         now_time = now_bj.time()
                         
-                        # 精确扣除午休时间
-                        if now_time < datetime.time(9, 30):
-                            minutes_passed = 1
-                        elif now_time <= datetime.time(11, 30):
-                            minutes_passed = (now_bj.hour * 60 + now_bj.minute) - (9 * 60 + 30)
-                        elif now_time <= datetime.time(13, 0):
-                            minutes_passed = 120
-                        elif now_time <= datetime.time(15, 0):
-                            minutes_passed = 120 + (now_bj.hour * 60 + now_bj.minute) - (13 * 60)
-                        else:
-                            minutes_passed = 240
+                        if now_time < datetime.time(9, 30): minutes_passed = 1
+                        elif now_time <= datetime.time(11, 30): minutes_passed = (now_bj.hour * 60 + now_bj.minute) - (9 * 60 + 30)
+                        elif now_time <= datetime.time(13, 0): minutes_passed = 120
+                        elif now_time <= datetime.time(15, 0): minutes_passed = 120 + (now_bj.hour * 60 + now_bj.minute) - (13 * 60)
+                        else: minutes_passed = 240
                             
                         minutes_passed = max(1, minutes_passed)
-                        
                         raw_vol_ratio = (today_turnover / minutes_passed) / (eod_vol / 240)
                         
-                        # 收紧阈值，敏感度拉满
                         vol_tag = "平量"
                         if raw_vol_ratio > 1.15: vol_tag = "放量"
                         elif raw_vol_ratio < 0.85: vol_tag = "缩量"
@@ -135,7 +127,7 @@ def get_realtime_data(proxy_code: str, eod_vol_str: str):
     return None, None, "无量比", None
 
 # ==========================================
-# 3. 组装情报 (修复真实市值 Bug)
+# 3. 组装情报
 # ==========================================
 def collect_v4_intelligence(gc) -> tuple:
     sh = gc.open("基金净值总结")
@@ -176,10 +168,8 @@ def collect_v4_intelligence(gc) -> tuple:
         pos_status = "【已空仓】" if shares <= 0 else "【持仓中】"
         ma20_eod = float(row[get_idx("[EOD]MA20点位")]) if get_idx("[EOD]MA20点位") != -1 and row[get_idx("[EOD]MA20点位")] else 0.0
         
-        # 1. 抓取 ETF 盘口
         current_price, today_pct, vol_str, raw_vol_ratio = get_realtime_data(proxy, eod_vol_str)
         
-        # 2. 计算真实场外基金市值 (修复点)
         nav_str = row[idx_nav].strip() if idx_nav != -1 else ""
         cost_str = row[idx_cost].strip() if idx_cost != -1 else ""
         try: base_price = float(nav_str)
@@ -189,27 +179,21 @@ def collect_v4_intelligence(gc) -> tuple:
             except: base_price = 0.0
             
         market_value = shares * base_price
-        
         raw_ma_dist = None
         is_qdii = ("美股" in camp or "QDII" in camp or "纳斯达克" in name)
         
         if is_qdii:
-            # 估算 QDII 盘中市值
             if market_value > 0 and us_qqq_pct is not None: market_value *= (1 + us_qqq_pct / 100)
             mv_str = f"¥{market_value/1000:.1f}k" if market_value > 0 else "空仓"
-            
             q_str = f"{us_qqq_pct:+.2f}%" if us_qqq_pct is not None else "未知"
             n_str = f"{us_nq_pct:+.2f}%" if us_nq_pct is not None else "未知"
             hard_data = f"昨夜 {q_str} | 期指 {n_str} | 仓:{mv_str} |"
             ai_prompt_etfs.append(f"* **{name}** {pos_status}: 昨夜涨跌 {q_str} | 盘前(期指) {n_str} | 底线纪律:{rule_limit}")
         else:
-            # 估算 A股 盘中市值
             if market_value > 0 and today_pct is not None: market_value *= (1 + today_pct / 100)
             mv_str = f"¥{market_value/1000:.1f}k" if market_value > 0 else "空仓"
-            
             ma_status = "MA20:未知"
             if current_price and ma20_eod > 0:
-                # 乖离率继续用 ETF 算，这是绝对正确的
                 raw_ma_dist = ((current_price - ma20_eod) / ma20_eod) * 100
                 ma_status = f"MA20乖离:{raw_ma_dist:+.2f}%"
             pct_str = f"{today_pct:+.2f}%" if today_pct is not None else "停牌"
@@ -260,10 +244,6 @@ def ask_v4_tactical_agent(md_prompt: str, rules_str: str) -> dict:
     "永赢半导体": {{
       "action": "锁仓",
       "reason": "稳居MA20之上，利润垫丰厚，红盘严禁加仓，死拿不动。"
-    }},
-    "华宝纳斯达克": {{
-      "action": "定投",
-      "reason": "未见期指-2%实质性暴跌，维持日常定投节奏。"
     }}
   }},
   "doc_full_report": "### 🌍 宏观诊断与全球阵地推演\\n(此处写入深度分析...)"
@@ -280,7 +260,7 @@ def ask_v4_tactical_agent(md_prompt: str, rules_str: str) -> dict:
     return json.loads(response.text)
 
 # ==========================================
-# 5. Google Doc 固定阵地注入 (支持左侧大纲导航)
+# 5. Google Doc 固定阵地注入 (支持大纲 + 注入全量数据)
 # ==========================================
 def update_google_doc(creds, report_text: str, target_doc_id: str) -> str:
     tz_bj = pytz.timezone('Asia/Shanghai')
@@ -288,44 +268,58 @@ def update_google_doc(creds, report_text: str, target_doc_id: str) -> str:
     date_str = now.strftime('%Y-%m-%d %H:%M')
     docs_service = build('docs', 'v1', credentials=creds)
     
-    # 将标题和正文分开，以精准计算标题的长度
     title_text = f"📅 {date_str} 盘中风控决断\n"
     body_text = f"{report_text}\n\n"
     full_text = title_text + body_text
     
-    # 组合 API 指令：先插入文字，再刷上标题格式
     requests = [
-        {
-            'insertText': {
-                'location': {'index': 1},
-                'text': full_text
-            }
-        },
-        {
-            'updateParagraphStyle': {
-                'range': {
-                    'startIndex': 1,
-                    # 极其精准：只把标题部分的文字刷成 Heading 2，正文保持原样
-                    'endIndex': 1 + len(title_text)
-                },
-                'paragraphStyle': {
-                    'namedStyleType': 'HEADING_2'
-                },
-                'fields': 'namedStyleType'
-            }
-        }
+        {'insertText': {'location': {'index': 1}, 'text': full_text}},
+        {'updateParagraphStyle': {
+            'range': {'startIndex': 1, 'endIndex': 1 + len(title_text)},
+            'paragraphStyle': {'namedStyleType': 'HEADING_2'},
+            'fields': 'namedStyleType'
+        }}
     ]
-    
     docs_service.documents().batchUpdate(documentId=target_doc_id, body={'requests': requests}).execute()
     return f"https://docs.google.com/document/d/{target_doc_id}/edit"
+
 # ==========================================
-# 6. 企业微信终极排版拼接
+# 6. 企业微信推送
 # ==========================================
-def notify_wechat(macro_str, hard_data_dict, ai_summary, fund_decisions, doc_link):
+def notify_wechat(macro_str, ai_summary, orders_block, doc_link):
     robot_key = os.environ.get("WECHAT_ROBOT_KEY")
     if not robot_key: return
 
+    content = f"""🚀 **V4.0 战术中枢 | 14:45 全阵地快照**
+
+🌍 **全球水位**:
+`{macro_str}`
+
+🧠 **AI 首席决断**:
+> {ai_summary}
+
+⚡ **全阵地扫描与指令**:
+{orders_block}
+
+🔗 **[点击查阅全量数据战报日记]({doc_link})**"""
+
+    payload = {"msgtype": "markdown", "markdown": {"content": content}}
+    try:
+        requests.post(f"https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key={robot_key}", json=payload)
+    except: pass
+
+if __name__ == "__main__":
+    MY_DOC_ID = "1ydm84CsKPnM3uFB4iSJsQrJ2A-sHV38GCt9_KMRV4vY" # <--- 别忘了填您的ID
+    
+    creds = get_google_credentials()
+    gc = gspread.authorize(creds)
+    
+    md_prompt, rules_str, macro_str, hard_data_dict, macro_raw_dict, portfolio_raw_list = collect_v4_intelligence(gc)
+    ai_json = ask_v4_tactical_agent(md_prompt, rules_str)
+    
+    # 核心修复点：将硬数据与 AI 分析提前组合！
     orders_list = []
+    fund_decisions = ai_json.get("fund_decisions", {})
     for fund_name, hard_str in hard_data_dict.items():
         decision = fund_decisions.get(fund_name, {"action": "观望", "reason": "维持既定策略。"})
         act = decision.get("action", "观望")
@@ -339,35 +333,28 @@ def notify_wechat(macro_str, hard_data_dict, ai_summary, fund_decisions, doc_lin
     
     orders_block = "\n".join([f"- {o}" for o in orders_list])
     
-    content = f"""🚀 **V4.0 战术中枢 | 14:45 全阵地快照**
+    ai_summary = ai_json.get("ai_summary", "")
+    doc_full_report = ai_json.get("doc_full_report", "")
+    
+    # 【拼装给 Google Docs 的“全家桶合影”】
+    full_doc_body = f"""【🌍 全球水位】
+{macro_str}
 
-🌍 **全球水位**:
-`{macro_str}`
+【🧠 AI 首席决断】
+{ai_summary}
 
-🧠 **AI 首席决断**:
-> {ai_summary}
-
-⚡ **全阵地扫描与指令**:
+【⚡ 全阵地扫描与指令 (包含盘口硬数据)】
 {orders_block}
 
-🔗 **[点击查阅深度穿透研报]({doc_link})**"""
-
-    payload = {"msgtype": "markdown", "markdown": {"content": content}}
-    try:
-        requests.post(f"https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key={robot_key}", json=payload)
-    except: pass
-
-if __name__ == "__main__":
-    MY_DOC_ID = "1ydm84CsKPnM3uFB4iSJsQrJ2A-sHV38GCt9_KMRV4vY" # <--- 别忘了换成您的ID
+【📝 深度宏观穿透研报】
+{doc_full_report}
+"""
     
-    creds = get_google_credentials()
-    gc = gspread.authorize(creds)
+    # 把全家桶发给 Google Doc
+    doc_link = update_google_doc(creds, full_doc_body, MY_DOC_ID)
     
-    md_prompt, rules_str, macro_str, hard_data_dict, macro_raw_dict, portfolio_raw_list = collect_v4_intelligence(gc)
-    ai_json = ask_v4_tactical_agent(md_prompt, rules_str)
-    
-    doc_link = update_google_doc(creds, ai_json["doc_full_report"], MY_DOC_ID)
-    notify_wechat(macro_str, hard_data_dict, ai_json["ai_summary"], ai_json.get("fund_decisions", {}), doc_link)
+    # 把精简版发给微信
+    notify_wechat(macro_str, ai_summary, orders_block, doc_link)
     
     archive_json = {
         "timestamp": datetime.datetime.now(pytz.timezone('Asia/Shanghai')).strftime('%Y-%m-%d %H:%M:%S'),
