@@ -12,10 +12,9 @@ import requests
 import concurrent.futures
 
 # ==========================================
-# 0. 战术熔断器 (Tactical Timeout)
+# 0. 战术熔断器
 # ==========================================
 def fetch_with_timeout(func, timeout_sec, *args, **kwargs):
-    """强制熔断机制：防止任何第三方 API 假死导致系统卡死"""
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
         future = executor.submit(func, *args, **kwargs)
         try:
@@ -24,7 +23,6 @@ def fetch_with_timeout(func, timeout_sec, *args, **kwargs):
             raise TimeoutError("接口假死，已强制战术熔断！")
 
 def get_yf_history(symbol, period="5d"):
-    """封装 YFinance 以便穿透熔断器"""
     return yf.Ticker(symbol).history(period=period)
 
 def get_gspread_client():
@@ -34,7 +32,7 @@ def get_gspread_client():
     return gspread.service_account_from_dict(json.loads(creds_json))
 
 # ==========================================
-# 1. 抓取宏观数据 (带 5 秒熔断)
+# 1. 抓取外围宏观数据 (YFinance)
 # ==========================================
 def get_macro_v3() -> tuple:
     tactical_macro = {}
@@ -50,20 +48,17 @@ def get_macro_v3() -> tuple:
     
     for display_name, symbol in tickers_map.items():
         try:
-            # 🎯 给 YFinance 加上 5 秒强制熔断
-            data = fetch_with_timeout(get_yf_history, 5, symbol, "5d")
+            data = fetch_with_timeout(get_yf_history, 4, symbol, "5d")
             if len(data) >= 2:
                 closes = data['Close'].tolist()
                 pct_chg = ((closes[-1] - closes[-2]) / closes[-2]) * 100
-                
                 if "BTC" in display_name or "XAU" in display_name:
                     tactical_macro[display_name] = f"${closes[-1]:,.0f}({pct_chg:+.2f}%)"
                 elif "US10Y" in display_name:
                     tactical_macro[display_name] = f"{closes[-1]:.2f}%({pct_chg:+.2f}%)"
                 else:
                     tactical_macro[display_name] = f"{closes[-1]:.0f}({pct_chg:+.2f}%)"
-                
-                strategic_macro[symbol] = {"current": closes[-1], "daily_pct": pct_chg, "5d_trend": [round(x, 3) for x in closes]}
+                strategic_macro[symbol] = {"current": closes[-1], "daily_pct": pct_chg}
             else:
                 tactical_macro[display_name] = "N/A"
         except:
@@ -72,58 +67,40 @@ def get_macro_v3() -> tuple:
     return tactical_macro, strategic_macro
 
 # ==========================================
-# 2. 抓取 ETF (双引擎容灾 + 5秒熔断)
+# 2. 抓取 ETF (引入腾讯极速接口，绝对真实)
 # ==========================================
-def get_realtime_etf_features(proxy_code: str, spot_df: pd.DataFrame) -> dict:
-    features = {"today_pct": 0.0, "tactical_desc": "量价盲区", "5d_vol_ratios": [], "ma250_dist": 0.0}
-    pct_found = False
+def get_realtime_etf_features(proxy_code: str) -> dict:
+    features = {"today_pct": 0.0, "tactical_desc": "无量价数据", "5d_vol_ratios": [], "ma250_dist": 0.0}
     
-    if not spot_df.empty:
-        match = spot_df[spot_df["代码"] == proxy_code]
-        if not match.empty:
-            features["today_pct"] = round(float(match.iloc[0]['涨跌幅']), 2)
-            pct_found = True
-            
-    vols, prices = [], []
-    
-    # 🎯 AkShare 引擎 (限时 5 秒)
+    # 🎯 步骤 1：使用腾讯底层 API 抓取绝对真实的实时涨跌幅 (0延迟，绝不报错)
     try:
-        hist_df = fetch_with_timeout(ak.fund_etf_hist_em, 5, symbol=proxy_code, period="daily")
+        prefix = "sh" if proxy_code.startswith("5") else "sz"
+        url = f"http://qt.gtimg.cn/q={prefix}{proxy_code}"
+        resp = fetch_with_timeout(requests.get, 3, url)
+        data = resp.text.split('~')
+        if len(data) > 32:
+            features["today_pct"] = round(float(data[32]), 2)
+    except:
+        pass # 如果腾讯也挂了，涨跌幅显示 0.0
+
+    # 🎯 步骤 2：使用 AkShare 抓取历史数据计算量比与乖离率
+    try:
+        hist_df = fetch_with_timeout(ak.fund_etf_hist_em, 4, symbol=proxy_code, period="daily")
         if len(hist_df) >= 2:
             vols = hist_df.tail(6)['成交额'].tolist()
-            prices = hist_df.tail(6)['收盘'].tolist()
             if len(hist_df) >= 20:
                 ma250 = hist_df.tail(250)['收盘'].mean()
                 features["ma250_dist"] = round(((hist_df.iloc[-1]['收盘'] - ma250) / ma250) * 100, 2)
-            if not pct_found:
-                features["today_pct"] = round(((prices[-1] - prices[-2]) / prices[-2]) * 100, 2)
-                pct_found = True
-    except:
-        pass 
-
-    # 🎯 YFinance 引擎接管 (限时 5 秒)
-    if not vols or not prices:
-        try:
-            suffix = ".SS" if proxy_code.startswith("5") else ".SZ"
-            df_yf = fetch_with_timeout(get_yf_history, 5, f"{proxy_code}{suffix}", "6d")
-            if len(df_yf) >= 2:
-                vols = df_yf['Volume'].tolist()
-                prices = df_yf['Close'].tolist()
-                if not pct_found:
-                    features["today_pct"] = round(((prices[-1] - prices[-2]) / prices[-2]) * 100, 2)
-        except:
-            pass
-
-    # 计算量比
-    if vols and len(vols) >= 2:
-        ratios = [round(vols[i]/vols[i-1], 2) if vols[i-1]>0 else 1.0 for i in range(1, len(vols))]
-        features["5d_vol_ratios"] = ratios
-        last_ratio = ratios[-1]
-        
-        if last_ratio > 1.2: features["tactical_desc"] = f"放量({last_ratio})"
-        elif last_ratio < 0.8: features["tactical_desc"] = f"缩量({last_ratio})"
-        else: features["tactical_desc"] = f"平量({last_ratio})"
             
+            ratios = [round(vols[i]/vols[i-1], 2) if vols[i-1]>0 else 1.0 for i in range(1, len(vols))]
+            features["5d_vol_ratios"] = ratios
+            last_ratio = ratios[-1]
+            if last_ratio > 1.2: features["tactical_desc"] = f"放量({last_ratio})"
+            elif last_ratio < 0.8: features["tactical_desc"] = f"缩量({last_ratio})"
+            else: features["tactical_desc"] = f"平量({last_ratio})"
+    except:
+        pass
+
     return features
 
 # ==========================================
@@ -133,12 +110,7 @@ def collect_v3_intelligence(gc) -> tuple:
     sh = gc.open("基金净值总结")
     tac_macro, strat_macro = get_macro_v3()
     
-    print("   [+] 启动双引擎穿透式抓取 (带超时熔断)...")
-    try: 
-        # 🎯 全市场盘口抓取限时 8 秒，绝不卡死
-        etf_spot = fetch_with_timeout(ak.fund_etf_spot_em, 8)
-    except: 
-        etf_spot = pd.DataFrame()
+    print("   [+] 启动腾讯+东方财富双引擎穿透式抓取...")
     
     dash_data = sh.worksheet("Dashboard").get_all_values()
     headers = dash_data[0]
@@ -164,10 +136,11 @@ def collect_v3_intelligence(gc) -> tuple:
             pos_str = "未知"
 
         if rule: tactical_rules.append(f"- **{name}**：{rule}")
-        exec_template.append(f"- **{name}**：[指令] | ￥[金额] | [理由(限15字)。[证伪]:限8字]")
+        # 强制 AI 把废话省在执行单里
+        exec_template.append(f"- **{name}**：[指令] | ￥[金额] | [理由(极简15字内)。[证伪]:限8字]")
         
         if proxy:
-            features = get_realtime_etf_features(proxy, etf_spot)
+            features = get_realtime_etf_features(proxy)
             pct = features["today_pct"]
             tactical_etfs.append(f"* **{name}**({proxy}): {pct:+.2f}% | 仓:{pos_str} | {features['tactical_desc']}")
             strategic_archive["active_positions"].append({"name": name, "proxy": proxy, "today_pct": pct})
@@ -181,11 +154,11 @@ def collect_v3_intelligence(gc) -> tuple:
             r_proxy = re.search(r'\d{6}', row[get_idx("替身代码")]).group(0) if re.search(r'\d{6}', row[get_idx("替身代码")]) else ""
             r_trigger = row[get_idx("狙击触发条件")]
             if r_proxy:
-                features = get_realtime_etf_features(r_proxy, etf_spot)
+                features = get_realtime_etf_features(r_proxy)
                 tactical_radar.append(f"* **{r_name}**: {features['today_pct']:+.2f}% | 🎯扳机: {r_trigger}")
     except: pass
 
-    etfs_str = "\n".join(tactical_etfs) if tactical_etfs else "暂无场内数据。"
+    etfs_str = "\n".join(tactical_etfs) if tactical_etfs else "暂无数据。"
     radar_str = "\n".join(tactical_radar) if tactical_radar else "空。"
     
     md_prompt = f"""## 🌍 宏观水位
@@ -200,29 +173,27 @@ def collect_v3_intelligence(gc) -> tuple:
     return md_prompt, "\n".join(tactical_rules), "\n".join(exec_template), strategic_archive
 
 # ==========================================
-# 4. AI 高压字数限制大脑
+# 4. AI 顶级大脑 (恢复研报级含金量)
 # ==========================================
 def ask_v3_tactical_agent(md_prompt: str, rules_str: str, exec_str: str) -> str:
     client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
     prompt = f"""
-# Role: V3.0 场外基金量化大脑 (Midday Agent)
-当前14:45，基于数据极速决断。
+# Role: V3.0 顶级场外基金量化大脑 (Midday Agent)
+当前14:45，基于数据进行兼具深度与纪律的决断。
 
 【输入情报】：
 {md_prompt}
 【战术纪律】：
 {rules_str}
 
-【高压红线】：为了防范微信截断，你的输出总字数绝对不准超过 400 字！[理由]必须控制在15个字以内！[证伪]必须控制在8个字以内（如：破20日线）！
-
 # Output Format：
+【排版红线】：[执行单]的理由与证伪必须严格精简！但你可以把省下来的字数，全部投入到【宏观诊断】和【阵地推演】的深度分析中，恢复你顶级分析师的含金量！
 
 ### 🌍 [宏观主线诊断]
-- 流动性：(极简，限20字)
-- A股主线：(极简，限30字)
+(结合宏观数据深度剖析全球流动性预期与A股资金高低切换逻辑，展现深度洞察力，约 150-200 字)
 
 ### 🧠 [阵地推演]
-(极简概括战术重心，限50字)
+(深度推演今日战术重心、防守反击逻辑与机会成本，约 150 字)
 
 ### 📝 [15:00 执行单]
 {exec_str}
@@ -230,7 +201,7 @@ def ask_v3_tactical_agent(md_prompt: str, rules_str: str, exec_str: str) -> str:
     response = client.models.generate_content(
         model='gemini-3.1-pro-preview', 
         contents=prompt, 
-        config=genai.types.GenerateContentConfig(temperature=0.1)
+        config=genai.types.GenerateContentConfig(temperature=0.2)
     )
     return response.text
 
@@ -253,13 +224,14 @@ def archive_and_notify(md_prompt: str, ai_decision: str, strategic_json: dict):
     if robot_key:
         full_content = f"{md_prompt}\n====================\n\n{ai_decision}"
         
+        # 释放微信空间，给予推演小作文更大的容错率 (4096 字节极限，我们卡在 3900)
         if len(full_content.encode('utf-8')) > 3900:
             full_content = full_content[:1250] + "\n\n...(字数触及上限，安全截断)"
             
         payload = {
             "msgtype": "markdown", 
             "markdown": {
-                "content": f"🚀 **V3.0 盘中决策 (防假死突围版)**\n\n{full_content}"
+                "content": f"🚀 **V3.0 盘中决策 (含金量拉满版)**\n\n{full_content}"
             }
         }
         try:
