@@ -1,0 +1,42 @@
+name: V4.0 Daytime Tactical Hub (首席风控官)
+
+on:
+  schedule:
+    # 每天北京时间 14:37 (UTC时间 06:37)，周一到周五运行
+    - cron: '37 6 * * 1-5'
+  workflow_dispatch: # 保留手动触发按钮，方便随时演习
+
+jobs:
+  run-tactical-hub:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # 赋予写入权限，以便保存 JSON 日志
+      
+    steps:
+      - name: 📥 检出代码
+        uses: actions/checkout@v3
+
+      - name: 🐍 配置 Python 环境
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: 📦 根据清单安装武器库
+        run: |
+          pip install -r requirements.txt
+
+      - name: 🚀 执行 V4.0 空战决断
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          WECHAT_ROBOT_KEY: ${{ secrets.WECHAT_ROBOT_KEY }}
+          GCP_SERVICE_ACCOUNT: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+        run: python main_v4.py
+
+      - name: 🗄️ 归档今日决策 JSON (保存火种)
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          # 将 logs 文件夹下新生成的 JSON 存入代码仓库
+          git add logs/*.json
+          git commit -m "🤖 自动归档: V4.0 每日风控决策 JSON" || echo "今日无新决策或文件未变动"
+          git push
