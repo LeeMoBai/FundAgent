@@ -72,10 +72,12 @@ def get_macro_v3() -> tuple:
     return tactical_macro, strategic_macro
 
 # ==========================================
-# 2. 抓取 ETF (腾讯极速接口)
+# 2. 抓取 ETF (腾讯极速接口 + AkShare/YF 双擎补量)
 # ==========================================
 def get_realtime_etf_features(proxy_code: str) -> dict:
     features = {"today_pct": 0.0, "tactical_desc": "无量价数据", "5d_vol_ratios": [], "ma250_dist": 0.0}
+    
+    # 🎯 步骤 1：腾讯极速 API 抓涨跌幅 (0延迟)
     try:
         prefix = "sh" if proxy_code.startswith("5") else "sz"
         url = f"http://qt.gtimg.cn/q={prefix}{proxy_code}"
@@ -86,21 +88,40 @@ def get_realtime_etf_features(proxy_code: str) -> dict:
     except:
         pass 
 
-    try:
-        hist_df = fetch_with_timeout(ak.fund_etf_hist_em, 4, symbol=proxy_code, period="daily")
-        if len(hist_df) >= 2:
-            vols = hist_df.tail(6)['成交额'].tolist()
-            ratios = [round(vols[i]/vols[i-1], 2) if vols[i-1]>0 else 1.0 for i in range(1, len(vols))]
-            features["5d_vol_ratios"] = ratios
-            last_ratio = ratios[-1]
-            if last_ratio > 1.2: features["tactical_desc"] = f"放量({last_ratio})"
-            elif last_ratio < 0.8: features["tactical_desc"] = f"缩量({last_ratio})"
-            else: features["tactical_desc"] = f"平量({last_ratio})"
-    except:
-        pass
+    # 🎯 步骤 2：抓取量比 (增加 2 次重试与 6 秒宽容度)
+    vols = []
+    for _ in range(2):
+        try:
+            hist_df = fetch_with_timeout(ak.fund_etf_hist_em, 6, symbol=proxy_code, period="daily")
+            if len(hist_df) >= 2:
+                vols = hist_df.tail(6)['成交额'].tolist()
+                if len(hist_df) >= 20:
+                    ma250 = hist_df.tail(250)['收盘'].mean()
+                    features["ma250_dist"] = round(((hist_df.iloc[-1]['收盘'] - ma250) / ma250) * 100, 2)
+                break
+        except:
+            pass
+
+    # 🎯 步骤 3：如果 AkShare 彻底死机，启用雅虎财经专职“补量”
+    if not vols:
+        try:
+            suffix = ".SS" if proxy_code.startswith("5") else ".SZ"
+            df_yf = fetch_with_timeout(get_yf_history, 5, f"{proxy_code}{suffix}", "6d")
+            if len(df_yf) >= 2:
+                vols = df_yf['Volume'].tolist()
+        except:
+            pass
+
+    # 🎯 步骤 4：统一计算量比
+    if vols and len(vols) >= 2:
+        ratios = [round(vols[i]/vols[i-1], 2) if vols[i-1]>0 else 1.0 for i in range(1, len(vols))]
+        features["5d_vol_ratios"] = ratios
+        last_ratio = ratios[-1]
+        if last_ratio > 1.2: features["tactical_desc"] = f"放量({last_ratio})"
+        elif last_ratio < 0.8: features["tactical_desc"] = f"缩量({last_ratio})"
+        else: features["tactical_desc"] = f"平量({last_ratio})"
 
     return features
-
 # ==========================================
 # 3. 组装极度瘦身的经典快照
 # ==========================================
