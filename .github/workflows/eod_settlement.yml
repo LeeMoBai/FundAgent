@@ -27,3 +27,10 @@ jobs:
         env:
           GCP_SERVICE_ACCOUNT: ${{ secrets.GCP_SERVICE_ACCOUNT }}
         run: python eod_main_v4.py
+      - name: 🗄️ 归档今日 EOD 结算 JSON (保存火种)
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          git add logs/*.json
+          git commit -m "🌙 自动归档: V4.1 EOD 盘后真实状态" || echo "今日无新决策或文件未变动"
+          git push
