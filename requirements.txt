@@ -1,6 +1,10 @@
+gspread
 akshare
 yfinance
-google-genai
-gspread
-pytz
+requests
 pandas
+google-generativeai
+google-api-python-client
+google-auth-httplib2
+google-auth-oauthlib
+pytz
