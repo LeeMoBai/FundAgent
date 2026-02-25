@@ -34,7 +34,7 @@ def get_google_credentials():
     return service_account.Credentials.from_service_account_info(creds_dict, scopes=scopes)
 
 # ==========================================
-# 1. 宏观水位引擎
+# 1. 宏观水位引擎 (V4.2 加装 VIX 与 CNH 探针)
 # ==========================================
 def get_macro_waterlevel():
     tickers = {
@@ -44,7 +44,10 @@ def get_macro_waterlevel():
         "黄金(XAU)": "GC=F",
         "纳指(NQ)": "NQ=F",
         "纳指ETF(QQQ)": "QQQ", 
-        "XBI": "XBI"
+        "XBI": "XBI",
+        # 👇 新增：全球恐慌物理熔断器与外资测谎仪
+        "恐慌指数(VIX)": "^VIX",
+        "离岸人民币(USD/CNH)": "USDCNH=X"
     }
     macro_strs = []
     macro_raw_dict = {} 
@@ -60,17 +63,19 @@ def get_macro_waterlevel():
                 
                 if name in ["BTC", "黄金(XAU)", "纳指(NQ)"]:
                     val_str = f"${int(close):,}"
-                elif name == "美债(US10Y)":
-                    val_str = f"{close:.2f}%"
+                elif name in ["美债(US10Y)", "恐慌指数(VIX)"]:
+                    val_str = f"{close:.2f}"
+                elif name == "离岸人民币(USD/CNH)":
+                    val_str = f"¥{close:.4f}"
                 else:
                     val_str = f"{int(close)}"
                     
-                return name, f"{name}:{val_str}({pct:+.2f}%)", round(close, 2), round(pct, 2)
+                return name, f"{name}:{val_str}({pct:+.2f}%)", round(close, 4), round(pct, 2)
         except:
             pass
         return name, f"{name}:暂无", None, None
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=7) as executor:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=9) as executor:
         futures = {executor.submit(fetch_ticker, k, v): k for k, v in tickers.items()}
         for fut in concurrent.futures.as_completed(futures):
             name, disp_str, raw_val, raw_pct = fut.result()
@@ -80,9 +85,8 @@ def get_macro_waterlevel():
                 macro_raw_dict[name] = {"value": raw_val, "pct": raw_pct}
             
     return " | ".join(macro_strs), macro_raw_dict
-
 # ==========================================
-# 2. 极速盘口与量比核算
+# 2. 极速盘口与量比核算 (V4.2 引入流动性枯竭拦截)
 # ==========================================
 def get_realtime_data(proxy_code: str, eod_vol_str: str):
     try:
@@ -94,10 +98,15 @@ def get_realtime_data(proxy_code: str, eod_vol_str: str):
             if len(data) > 40:
                 current_price = float(data[3])
                 pct_change = float(data[32])
-                today_turnover = float(data[37]) * 10000 
+                today_turnover = float(data[37]) * 10000 # 转换为元
                 
                 vol_ratio_str = "量比未知"
                 raw_vol_ratio = None
+                
+                # 👇 新增：微盘 ETF 绝对成交额防骗局过滤
+                if today_turnover < 50000000: # 小于 5000 万 RMB
+                    return current_price, pct_change, "流动性枯竭(忽略量比)", 1.0
+                
                 if eod_vol_str:
                     try:
                         eod_vol = float(eod_vol_str.replace(",", ""))
@@ -125,7 +134,6 @@ def get_realtime_data(proxy_code: str, eod_vol_str: str):
     except:
         pass
     return None, None, "无量比", None
-
 # ==========================================
 # 3. 组装情报
 # ==========================================
@@ -218,7 +226,7 @@ def collect_v4_intelligence(gc) -> tuple:
     return md_prompt, "\n".join(ai_prompt_rules), macro_str, hard_data_dict, macro_raw_dict, portfolio_raw_list
 
 # ==========================================
-# 4. AI 首席风控官
+# 4. AI 首席风控官 (V4.2 植入终极物理熔断器)
 # ==========================================
 def ask_v4_tactical_agent(md_prompt: str, rules_str: str) -> dict:
     client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
@@ -231,19 +239,20 @@ def ask_v4_tactical_agent(md_prompt: str, rules_str: str) -> dict:
 【定性逻辑参考】：
 {rules_str}
 
-# 🔴 核心约束条件：
-1. 必须为输入的【每一个标的】（无论是否空仓）在 `fund_decisions` 中输出决策动作和理由，绝不可遗漏！
-2. 状态判定：如果标的标注了“【已空仓】”，绝对不能喊“卖出/清仓”。
-3. 不要使用情绪化词汇。
-4. `doc_full_report` 必须长达800字，且**必须结合韩国股市(KOSPI)映射、比特币流动性水位、科技巨头资本开支流向**进行深度宏观穿透分析。
+# 🔴 核心风控约束条件（违反即视为系统崩溃）：
+1. **VIX 物理熔断**：如果宏观数据中恐慌指数(VIX) > 25，触发【一级防御状态】。此时无论任何标的跌得多深，绝对禁止给出“左侧买入/加仓”指令，全部改为“观望/放弃接飞刀”。
+2. **汇率测谎仪**：如果 A 股核心宽基红盘放量，但离岸人民币(USD/CNH)同步贬值（如突破7.25），必须在理由中指出“汇率背离，警惕内资诱多”。
+3. **QDII 溢价警报**：对于华宝纳斯达克等跨境 ETF，如果期指大跌但盘口跌幅很小，必须在理由中提示“警惕场内高溢价陷阱，拒绝高位接盘”。
+4. 必须为【每一个标的】输出 `fund_decisions`，状态为“【已空仓】”的绝对不能喊“卖出/清仓”。
+5. `doc_full_report` 必须长达800字，强制结合 VIX 恐慌情绪、人民币汇率暗流、BTC 流动性进行深度机构级穿透。
 
 # 输出要求 (必须是合法的 JSON 格式)：
 {{
   "ai_summary": "用两句话总结今天的宏观状态和盘面异常点。",
   "fund_decisions": {{
-    "永赢半导体": {{
-      "action": "锁仓",
-      "reason": "稳居MA20之上，利润垫丰厚，红盘严禁加仓，死拿不动。"
+    "某某基金": {{
+      "action": "动作",
+      "reason": "严格遵循熔断与测谎逻辑的理由。"
     }}
   }},
   "doc_full_report": "### 🌍 宏观诊断与全球阵地推演\\n(此处写入深度分析...)"
@@ -258,7 +267,6 @@ def ask_v4_tactical_agent(md_prompt: str, rules_str: str) -> dict:
         )
     )
     return json.loads(response.text)
-
 # ==========================================
 # 5. Google Doc 固定阵地注入 (支持大纲 + 注入全量数据)
 # ==========================================
