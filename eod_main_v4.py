@@ -28,26 +28,49 @@ def get_gspread_client():
     return gspread.service_account_from_dict(json.loads(creds_json))
 
 # ==========================================
-# 1. 获取场外基金净值 (穿透缓存 + 精准日期对齐)
+# 1. 获取场外基金净值 (V4.5 天天+新浪双源狙击版)
 # ==========================================
-import time
-
-def get_fund_nav_by_date(fund_code: str, target_date: str):
+def get_fund_nav_data(fund_code: str, target_date: str):
+    ts = int(time.time() * 1000)
+    
+    # --- 渠道一：天天基金 (主攻) ---
     try:
-        # 加上时间戳，彻底击穿天天基金的 CDN 缓存
-        ts = int(time.time() * 1000)
-        url = f"https://fundmobapi.eastmoney.com/FundMNewApi/FundMNHisNetList?FCODE={fund_code}&pageIndex=1&pageSize=10&_={ts}"
-        headers = {"User-Agent": "Mozilla/5.0"}
-        resp = requests.get(url, headers=headers, timeout=5)
+        url_tt = f"https://fundmobapi.eastmoney.com/FundMNewApi/FundMNHisNetList?FCODE={fund_code}&pageIndex=1&pageSize=5&_={ts}"
+        resp = requests.get(url_tt, headers={"User-Agent": "Mozilla/5.0"}, timeout=4)
         data = resp.json()
         if data and 'Datas' in data and data['Datas']:
             for item in data['Datas']:
-                # 🛡️ 极其严苛：只要这一天的净值！宁可留空绝不张冠李戴
-                if item['FSRQ'] == target_date:
-                    return str(item['NAV'])
-    except Exception as e:
-        print(f"   [!] 获取净值失败 {fund_code}: {e}")
-    return ""
+                f_date = item['FSRQ'].replace('/', '-')
+                if f_date == target_date:
+                    return str(item['NAV']), f_date
+            # 记录一下天天基金目前看到的最新日期
+            tt_latest = data['Datas'][0]['FSRQ'].replace('/', '-')
+        else:
+            tt_latest = "未知"
+    except:
+        tt_latest = "接口异常"
+
+    # --- 渠道二：新浪财经 (补位) ---
+    # 如果天天没出，立即穿透到新浪数据中心
+    try:
+        url_sina = f"https://finance.sina.com.cn/fund/api/openapi.php/FundService.getFundNetValue?symbol={fund_code}"
+        resp_s = requests.get(url_sina, headers={"User-Agent": "Mozilla/5.0"}, timeout=4)
+        s_data = resp_s.json()
+        # 新浪返回的是最新的净值快照
+        if s_data and 'result' in s_data and s_data['result']['data']:
+            s_item = s_data['result']['data']
+            s_date = s_item['fbrq'].replace('/', '-') # 发布日期
+            if s_date == target_date:
+                print(f"   [⚡] 天天未出，新浪补位成功！{fund_code} -> {s_item['jjjz']}")
+                return str(s_item['jjjz']), s_date
+            sina_latest = s_date
+        else:
+            sina_latest = "未知"
+    except:
+        sina_latest = "接口异常"
+
+    # 两边都没匹配上，返回目前两个源里最新的一份日期报告
+    return "", f"天天:{tt_latest} | 新浪:{sina_latest}"
 
 # ==========================================
 # 2. 获取场内ETF盘后真实数据
