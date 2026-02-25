@@ -208,7 +208,7 @@ if __name__ == "__main__":
     print("🚀 启动 V4.0 白天空战中枢...")
     
     # 👇👇👇 【总司令请注意】将您刚才复制的文档 ID 填在这里 👇👇👇
-    MY_DOC_ID = "请在这里填入您的_Google_Doc_ID"
+    MY_DOC_ID = "1ydm84CsKPnM3uFB4iSJsQrJ2A-sHV38GCt9_KMRV4vY"
     
     creds = get_google_credentials()
     gc = gspread.authorize(creds)
