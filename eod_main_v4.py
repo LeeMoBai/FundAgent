@@ -77,7 +77,7 @@ def get_etf_eod_data(proxy_code: str):
 def run_eod_settlement():
     print("🌙 启动 V4.1 EOD 静默后勤清算系统...")
     gc = get_gspread_client()
-    sh = gc.open_by_key("请填入您的表格ID") # <--- 记得填您的 ID
+    sh = gc.open_by_key("1kKz9snuCeMSKwBCBGRBBUo8P-04C72Dx5Pt3ArYvtRw") # <--- 记得填您的 ID
     
     # --- 任务 A: 刷新 Dashboard ---
     ws_dash = sh.worksheet("Dashboard")
