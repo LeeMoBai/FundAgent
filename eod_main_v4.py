@@ -9,14 +9,16 @@ import concurrent.futures
 import time
 
 # ==========================================
-# 0. 基础设置与战术熔断器
+# 0. 基础设置与战术熔断器 (V4.1 全能防弹版)
 # ==========================================
 def fetch_with_timeout(func, timeout_sec, *args, **kwargs):
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
         future = executor.submit(func, *args, **kwargs)
         try:
             return future.result(timeout=timeout_sec)
-        except concurrent.futures.TimeoutError:
+        except Exception as e:
+            # 无论是超时(TimeoutError)还是被东方财富直接掐断(ConnectionError)
+            # 全部拦截，并返回 None，以触发后续的雅虎财经备用兜底逻辑
             return None
 
 def get_gspread_client():
@@ -24,7 +26,6 @@ def get_gspread_client():
     if not creds_json:
         raise ValueError("缺失 GCP_SERVICE_ACCOUNT")
     return gspread.service_account_from_dict(json.loads(creds_json))
-
 # ==========================================
 # 1. 获取场外基金净值 (穿透式API)
 # ==========================================
