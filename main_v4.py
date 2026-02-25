@@ -270,7 +270,7 @@ def notify_wechat(macro_str, hard_data_list, ai_summary, orders_list, doc_link):
         pass
 
 if __name__ == "__main__":
-    MY_DOC_ID = "请在这里填入您的_Google_Doc_ID"
+    MY_DOC_ID = "1ydm84CsKPnM3uFB4iSJsQrJ2A-sHV38GCt9_KMRV4vY"
     
     creds = get_google_credentials()
     gc = gspread.authorize(creds)
