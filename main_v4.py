@@ -270,7 +270,7 @@ def ask_v4_tactical_agent(md_prompt: str, rules_str: str) -> dict:
     )
     return json.loads(response.text)
 # ==========================================
-# 5. Google Doc 固定阵地注入 (支持大纲 + 注入全量数据)
+# 5. Google Doc 固定阵地注入 (防感染与 Emoji 精准对齐版)
 # ==========================================
 def update_google_doc(creds, report_text: str, target_doc_id: str) -> str:
     tz_bj = pytz.timezone('Asia/Shanghai')
@@ -278,21 +278,55 @@ def update_google_doc(creds, report_text: str, target_doc_id: str) -> str:
     date_str = now.strftime('%Y-%m-%d %H:%M')
     docs_service = build('docs', 'v1', credentials=creds)
     
+    # 组装文本：标题 + 正文 + 底部割线
     title_text = f"📅 {date_str} 盘中风控决断\n"
-    body_text = f"{report_text}\n\n"
+    body_text = f"{report_text}\n\n---------------------------------\n\n"
     full_text = title_text + body_text
     
+    # ⚔️ 核心修复 1：使用 UTF-16 彻底解决 Emoji 长度计算错位问题
+    title_len = len(title_text.encode('utf-16-le')) // 2
+    body_len = len(body_text.encode('utf-16-le')) // 2
+    full_len = title_len + body_len
+    
+    # ⚔️ 核心修复 2：提交三连击指令，彻底切断格式继承陷阱
     requests = [
-        {'insertText': {'location': {'index': 1}, 'text': full_text}},
-        {'updateParagraphStyle': {
-            'range': {'startIndex': 1, 'endIndex': 1 + len(title_text)},
-            'paragraphStyle': {'namedStyleType': 'HEADING_2'},
-            'fields': 'namedStyleType'
-        }}
+        # 动作一：强行在最顶端 (Index 1) 塞入今天的所有文字
+        {
+            'insertText': {
+                'location': {'index': 1},
+                'text': full_text
+            }
+        },
+        # 动作二：极其精准地只把【标题区域】刷成左侧大纲 (Heading 2)
+        {
+            'updateParagraphStyle': {
+                'range': {
+                    'startIndex': 1,
+                    'endIndex': 1 + title_len
+                },
+                'paragraphStyle': {
+                    'namedStyleType': 'HEADING_2'
+                },
+                'fields': 'namedStyleType'
+            }
+        },
+        # 动作三：防感染清洗！强行把【正文区域】全部洗刷回普通文本
+        {
+            'updateParagraphStyle': {
+                'range': {
+                    'startIndex': 1 + title_len,
+                    'endIndex': 1 + full_len
+                },
+                'paragraphStyle': {
+                    'namedStyleType': 'NORMAL_TEXT'
+                },
+                'fields': 'namedStyleType'
+            }
+        }
     ]
+    
     docs_service.documents().batchUpdate(documentId=target_doc_id, body={'requests': requests}).execute()
     return f"https://docs.google.com/document/d/{target_doc_id}/edit"
-
 # ==========================================
 # 6. 企业微信推送
 # ==========================================
