@@ -135,7 +135,7 @@ def get_realtime_data(proxy_code: str, eod_vol_str: str):
         pass
     return None, None, "无量比", None
 # ==========================================
-# 3. 组装情报
+# 3. 组装情报 (V4.2 双均线与雷达池重启版)
 # ==========================================
 def collect_v4_intelligence(gc) -> tuple:
     sh = gc.open("基金净值总结")
@@ -159,6 +159,7 @@ def collect_v4_intelligence(gc) -> tuple:
     us_qqq_pct = macro_raw_dict.get("纳指ETF(QQQ)", {}).get("pct")
     us_nq_pct = macro_raw_dict.get("纳指(NQ)", {}).get("pct")
     
+    # --- 1. 处理 Dashboard 核心阵地 ---
     for row in dash_data[1:]:
         if not row or (get_idx("基金代码") != -1 and not row[get_idx("基金代码")].strip().isdigit()): continue
         
@@ -175,6 +176,7 @@ def collect_v4_intelligence(gc) -> tuple:
             
         pos_status = "【已空仓】" if shares <= 0 else "【持仓中】"
         ma20_eod = float(row[get_idx("[EOD]MA20点位")]) if get_idx("[EOD]MA20点位") != -1 and row[get_idx("[EOD]MA20点位")] else 0.0
+        ma60_eod = float(row[get_idx("[EOD]MA60点位")]) if get_idx("[EOD]MA60点位") != -1 and row[get_idx("[EOD]MA60点位")] else 0.0
         
         current_price, today_pct, vol_str, raw_vol_ratio = get_realtime_data(proxy, eod_vol_str)
         
@@ -187,7 +189,8 @@ def collect_v4_intelligence(gc) -> tuple:
             except: base_price = 0.0
             
         market_value = shares * base_price
-        raw_ma_dist = None
+        raw_ma20_dist = None
+        raw_ma60_dist = None
         is_qdii = ("美股" in camp or "QDII" in camp or "纳斯达克" in name)
         
         if is_qdii:
@@ -200,10 +203,17 @@ def collect_v4_intelligence(gc) -> tuple:
         else:
             if market_value > 0 and today_pct is not None: market_value *= (1 + today_pct / 100)
             mv_str = f"¥{market_value/1000:.1f}k" if market_value > 0 else "空仓"
-            ma_status = "MA20:未知"
+            
+            # 双均线乖离率计算
+            ma_str_list = []
             if current_price and ma20_eod > 0:
-                raw_ma_dist = ((current_price - ma20_eod) / ma20_eod) * 100
-                ma_status = f"MA20乖离:{raw_ma_dist:+.2f}%"
+                raw_ma20_dist = ((current_price - ma20_eod) / ma20_eod) * 100
+                ma_str_list.append(f"M20:{raw_ma20_dist:+.2f}%")
+            if current_price and ma60_eod > 0:
+                raw_ma60_dist = ((current_price - ma60_eod) / ma60_eod) * 100
+                ma_str_list.append(f"M60:{raw_ma60_dist:+.2f}%")
+                
+            ma_status = " | ".join(ma_str_list) if ma_str_list else "均线未知"
             pct_str = f"{today_pct:+.2f}%" if today_pct is not None else "停牌"
             hard_data = f"{pct_str} | 仓:{mv_str} | {vol_str} | {ma_status} |"
             ai_prompt_etfs.append(f"* **{name}**({proxy}) {pos_status}: 今日 {pct_str} | {ma_status} | 底线纪律:{rule_limit}")
@@ -217,11 +227,48 @@ def collect_v4_intelligence(gc) -> tuple:
             "status": "空仓" if shares <= 0 else "持仓",
             "market_value_k": round(market_value/1000, 2),
             "pct_change": today_pct,
-            "vol_ratio": round(raw_vol_ratio, 2) if raw_vol_ratio else None,
-            "ma20_divergence_pct": round(raw_ma_dist, 2) if raw_ma_dist else None
+            "ma20_divergence_pct": round(raw_ma20_dist, 2) if raw_ma20_dist else None,
+            "ma60_divergence_pct": round(raw_ma60_dist, 2) if raw_ma60_dist else None
         })
 
-    md_prompt = f"## 🎯 场内盘口状态\n{chr(10).join(ai_prompt_etfs)}\n## 🌍 宏观水位\n{macro_str}"
+    # --- 2. 处理 雷达监控池 (重新上线！) ---
+    tactical_radar = []
+    try:
+        ws_radar = sh.worksheet("雷达监控")
+        radar_data = ws_radar.get_all_values()
+        r_headers = radar_data[0]
+        def r_idx(kw): return next((i for i, h in enumerate(r_headers) if kw in h), -1)
+        
+        for row in radar_data[1:]:
+            if not row or not any(row): continue
+            r_name = row[r_idx("板块名称")]
+            r_proxy = row[r_idx("替身代码")]
+            r_trigger = row[r_idx("🎯 V2.0 狙击触发条件 (定量扳机)")] if r_idx("🎯 V2.0 狙击触发条件 (定量扳机)") != -1 else "无扳机"
+            
+            r_ma20_eod = float(row[r_idx("[EOD]MA20点位")]) if r_idx("[EOD]MA20点位") != -1 and row[r_idx("[EOD]MA20点位")] else 0.0
+            r_ma60_eod = float(row[r_idx("[EOD]MA60点位")]) if r_idx("[EOD]MA60点位") != -1 and row[r_idx("[EOD]MA60点位")] else 0.0
+            
+            current_price, today_pct, _, _ = get_realtime_data(r_proxy, "")
+            
+            r_ma_str = []
+            if current_price and r_ma20_eod > 0: r_ma_str.append(f"M20:{((current_price - r_ma20_eod) / r_ma20_eod) * 100:+.2f}%")
+            if current_price and r_ma60_eod > 0: r_ma_str.append(f"M60:{((current_price - r_ma60_eod) / r_ma60_eod) * 100:+.2f}%")
+            r_ma_status = " | ".join(r_ma_str) if r_ma_str else "均线未知"
+            
+            pct_str = f"今日 {today_pct:+.2f}%" if today_pct is not None else "无最新价"
+            tactical_radar.append(f"* **{r_name}**({r_proxy}): {pct_str} | {r_ma_status} | 扳机:{r_trigger}")
+    except Exception as e:
+        print(f"雷达监控池读取异常: {e}")
+
+    # 将雷达池数据强势注入给大模型的提示词中！
+    md_prompt = f"""## 🎯 场内盘口状态 (持仓区)
+{chr(10).join(ai_prompt_etfs)}
+
+## 📡 雷达监控池 (备用金狩猎区)
+{chr(10).join(tactical_radar)}
+
+## 🌍 宏观水位
+{macro_str}"""
     
     return md_prompt, "\n".join(ai_prompt_rules), macro_str, hard_data_dict, macro_raw_dict, portfolio_raw_list
 
