@@ -72,48 +72,62 @@ def get_etf_eod_data(proxy_code: str):
     return result
 
 # ==========================================
-# 3. 执行静默写入与历史归档任务 (支持双表 MA20/MA60)
+# 3. 执行静默写入与历史归档任务 (V4.2 终极防空洞版)
 # ==========================================
 def run_eod_settlement():
-    print("🌙 启动 V4.1 EOD 静默后勤清算系统...")
+    print("🌙 启动 V4.2 EOD 静默后勤清算系统...")
     gc = get_gspread_client()
-    sh = gc.open_by_key("1kKz9snuCeMSKwBCBGRBBUo8P-04C72Dx5Pt3ArYvtRw") # <--- 记得填您的 ID
+    sh = gc.open_by_key("请填入您的表格ID") # <--- 别忘了填您的 ID
     
     # --- 任务 A: 刷新 Dashboard ---
     ws_dash = sh.worksheet("Dashboard")
     dash_data = ws_dash.get_all_values()
     headers = dash_data[0]
     
-    idx_fund = headers.index("基金代码") if "基金代码" in headers else -1
-    idx_proxy = headers.index("替身代码 (ETF)") if "替身代码 (ETF)" in headers else -1
-    idx_nav = headers.index("最新净值") if "最新净值" in headers else -1
-    idx_close = headers.index("[EOD]昨收盘价") if "[EOD]昨收盘价" in headers else -1
-    idx_vol = headers.index("[EOD]昨成交额") if "[EOD]昨成交额" in headers else -1
-    idx_ma20 = headers.index("[EOD]MA20点位") if "[EOD]MA20点位" in headers else -1
-    idx_ma60 = headers.index("[EOD]MA60点位") if "[EOD]MA60点位" in headers else -1
+    # 极度强健的列名匹配器 (只要包含关键字就能认出来)
+    def get_idx(kw): return next((i for i, h in enumerate(headers) if kw in h), -1)
+    
+    idx_fund = get_idx("基金代码")
+    idx_proxy = get_idx("替身代码")
+    idx_nav = get_idx("最新净值")
+    idx_close = get_idx("[EOD]昨收盘价")
+    idx_vol = get_idx("[EOD]昨成交额")
+    idx_ma20 = get_idx("[EOD]MA20")
+    idx_ma60 = get_idx("[EOD]MA60")
 
     updates = []
     eod_json_state = {} 
     nav_dict = {} 
     
     for row_idx, row in enumerate(dash_data[1:], start=2):
-        if not row or (idx_fund != -1 and not row[idx_fund].strip().isdigit()): continue
+        fund_code_raw = str(row[idx_fund]).strip() if idx_fund != -1 else ""
+        if not fund_code_raw: continue
+        
+        # 🛡️ 核心修复 1：强行补齐6位代码，防止 Google Sheets 吞掉开头的 0
+        fund_code = fund_code_raw.zfill(6)
+        if not fund_code.isdigit(): continue
             
-        fund_code = row[idx_fund].strip() if idx_fund != -1 else ""
-        fund_name = row[headers.index("基金名称")]
+        fund_name = row[get_idx("基金名称")]
         proxy_raw = row[idx_proxy].strip() if idx_proxy != -1 else ""
         import re
         proxy_code = re.search(r'\d{6}', proxy_raw).group(0) if re.search(r'\d{6}', proxy_raw) else ""
         
         fund_state = {}
         
-        if fund_code and idx_nav != -1:
-            nav = get_fund_nav(fund_code)
-            if nav != "":
-                updates.append({'range': rowcol_to_a1(row_idx, idx_nav + 1), 'values': [[nav]]})
-                fund_state["final_nav"] = nav
-                nav_dict[fund_code] = nav
+        # 1. 抓取真实净值
+        nav = get_fund_nav(fund_code)
         
+        # 🛡️ 核心修复 2：极速兜底！如果抓取失败，强行使用当前表格里已有的净值作为兜底，绝不留空
+        if nav == "":
+            nav = str(row[idx_nav]).strip() if idx_nav != -1 else ""
+            print(f"   [!] {fund_name} 净值更新延迟，已启用盘口净值兜底: {nav}")
+        
+        if nav != "":
+            if idx_nav != -1: updates.append({'range': rowcol_to_a1(row_idx, idx_nav + 1), 'values': [[nav]]})
+            fund_state["final_nav"] = nav
+            nav_dict[fund_code] = nav  # 存入字典的钥匙，绝对是完美的 6 位数
+        
+        # 2. 抓取 ETF 盘后数据
         if proxy_code:
             eod = get_etf_eod_data(proxy_code)
             if eod["close"] != "" and idx_close != -1: updates.append({'range': rowcol_to_a1(row_idx, idx_close + 1), 'values': [[eod["close"]]]})
@@ -128,14 +142,16 @@ def run_eod_settlement():
         ws_dash.batch_update(updates)
         print(f"   [√] Dashboard 核心阵地更新完毕！")
 
-    # --- 任务 B: 刷新 雷达监控 (新增) ---
+    # --- 任务 B: 刷新 雷达监控 ---
     try:
         ws_radar = sh.worksheet("雷达监控")
         radar_data = ws_radar.get_all_values()
         r_headers = radar_data[0]
-        r_idx_proxy = r_headers.index("替身代码") if "替身代码" in r_headers else -1
-        r_idx_ma20 = r_headers.index("[EOD]MA20点位") if "[EOD]MA20点位" in r_headers else -1
-        r_idx_ma60 = r_headers.index("[EOD]MA60点位") if "[EOD]MA60点位" in r_headers else -1
+        def r_idx(kw): return next((i for i, h in enumerate(r_headers) if kw in h), -1)
+        
+        r_idx_proxy = r_idx("替身代码")
+        r_idx_ma20 = r_idx("[EOD]MA20")
+        r_idx_ma60 = r_idx("[EOD]MA60")
         
         r_updates = []
         for row_idx, row in enumerate(radar_data[1:], start=2):
@@ -163,7 +179,10 @@ def run_eod_settlement():
             fund_codes_in_hist = hist_data[1]
             new_row = [datetime.datetime.now(pytz.timezone('Asia/Shanghai')).strftime('%Y-%m-%d')]
             for code in fund_codes_in_hist[1:]:
-                new_row.append(nav_dict.get(code.strip(), ""))
+                # 🛡️ 核心修复 3：对齐字典的键，让 "015968" 严丝合缝匹配！
+                code_key = str(code).strip().zfill(6)
+                nav_value = nav_dict.get(code_key, "")
+                new_row.append(nav_value)
             ws_hist.insert_row(new_row, 3) 
             print("   [√] 历史净值曲线表 (History) 追加成功！")
     except Exception as e:
@@ -178,6 +197,5 @@ def run_eod_settlement():
     with open(f"logs/EOD_State_{datetime.datetime.now().strftime('%Y%m%d')}.json", "w", encoding="utf-8") as f:
         json.dump(archive_json, f, ensure_ascii=False, indent=2)
     print("✅ EOD 结算全部完成！")
-
 if __name__ == "__main__":
     run_eod_settlement()
