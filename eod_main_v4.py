@@ -79,22 +79,58 @@ def get_fund_nav_data(fund_code: str, target_date: str):
     return "", " | ".join(sources_tried)
 
 # ==========================================
-# 2. 盘后数据 (ETF 结算)
+# 2. 盘后数据 (V4.8 护甲全开抗断联版)
 # ==========================================
 def get_etf_eod_data(proxy_code: str):
     result = {"close": "", "vol": "", "ma20": "", "ma60": ""}
     if not proxy_code: return result
+    
+    print(f"   [ETF] 正在获取 {proxy_code} 盘后数据...")
+    
+    # --- 渠道一：AkShare (东方财富原装接口) ---
     try:
         df = fetch_with_timeout(ak.fund_etf_hist_em, 8, symbol=proxy_code, period="daily", adjust="qfq")
-        if df is not None and len(df) >= 60:
+        if df is not None and not df.empty:
             result["close"] = float(df.iloc[-1]['收盘'])
             result["vol"] = float(df.iloc[-1]['成交额'])
             closes = df['收盘'].astype(float).tolist()
-            result["ma20"] = round(sum(closes[-20:]) / 20, 4)
-            result["ma60"] = round(sum(closes[-60:]) / 60, 4)
-    except: pass
-    return result
+            # 🛡️ 核心修复：就算不够 60 天，有几天算几天，绝对不全盘抛弃！
+            if len(closes) >= 20: result["ma20"] = round(sum(closes[-20:]) / 20, 4)
+            if len(closes) >= 60: result["ma60"] = round(sum(closes[-60:]) / 60, 4)
+            print(f"   [ETF-OK] {proxy_code} AkShare 抓取成功！")
+            return result
+    except Exception as e:
+        print(f"   [ETF-Warn] AkShare 超时或异常: {e}")
 
+    # --- 渠道二：YFinance (雅虎财经极速补位) ---
+    try:
+        suffix = ".SS" if proxy_code.startswith("5") else ".SZ"
+        tk = yf.Ticker(proxy_code + suffix)
+        hist = tk.history(period="3mo") # 拉取三个月填补均线
+        if not hist.empty:
+            result["close"] = float(hist['Close'].iloc[-1])
+            result["vol"] = float(hist['Volume'].iloc[-1] * result["close"]) 
+            closes = hist['Close'].astype(float).tolist()
+            if len(closes) >= 20: result["ma20"] = round(sum(closes[-20:]) / 20, 4)
+            if len(closes) >= 60: result["ma60"] = round(sum(closes[-60:]) / 60, 4)
+            print(f"   [ETF-OK] {proxy_code} YFinance 补位抓取成功！")
+            return result
+    except Exception as e:
+        print(f"   [ETF-Warn] YFinance 异常: {e}")
+        
+    # --- 渠道三：腾讯极速 API (底线抢救，只保现价和量) ---
+    try:
+        prefix = "sh" if proxy_code.startswith("5") else "sz"
+        resp = requests.get(f"http://qt.gtimg.cn/q={prefix}{proxy_code}", timeout=3)
+        data = resp.text.split('~')
+        if len(data) > 40:
+            result["close"] = float(data[3])
+            result["vol"] = float(data[37]) * 10000
+            print(f"   [ETF-Warn] {proxy_code} 仅抓到腾讯实时现价，均线留空。")
+    except Exception as e:
+        print(f"   [ETF-Error] {proxy_code} 彻底失联！")
+        
+    return result
 # ==========================================
 # 3. 核心清算主逻辑 (V4.7 智能时差偏移版)
 # ==========================================
