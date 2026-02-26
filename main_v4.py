@@ -260,7 +260,7 @@ def collect_v4_intelligence(gc):
     except Exception as e: print(f"雷达扫描异常: {e}")
 
     prompt_md = f"【宏观水位】\n{macro_str}\n\n【场内盘口状态 (持仓区)】\n" + "\n".join(portfolio_status) + "\n\n【雷达监控池】\n" + "\n".join(radar_status)
-    return prompt_md, "\n".join(rules_list), macro_str, hard_data_dict, macro_raw_dict, portfolio_raw_list
+    return prompt_md, "\n".join(rules_list), macro_str, hard_data_dict, macro_raw_dict, portfolio_raw_list, total_est_pnl
 
 # ==========================================
 # 4. AI 首席风控官
@@ -366,7 +366,7 @@ if __name__ == "__main__":
     creds = get_google_credentials()
     gc = gspread.authorize(creds)
     
-    md_prompt, rules_str, macro_str, hard_data_dict, macro_raw_dict, portfolio_raw_list = collect_v4_intelligence(gc)
+    md_prompt, rules_str, macro_str, hard_data_dict, macro_raw_dict, portfolio_raw_list, total_est_pnl = collect_v4_intelligence(gc)
     ai_json = ask_v4_tactical_agent(md_prompt, rules_str)
     
    # --- 1. 解析常规持仓指令 ---
@@ -387,7 +387,12 @@ if __name__ == "__main__":
         # 🛡️ 精准手术 2：把基金名称两边的 ** 加粗符号请回来
         orders_list.append(f"{icon} **{fund_name}**：{act} | {hard_str} | {rsn}")
     
-    orders_block = "\n".join([f"- {o}" for o in orders_list])
+    oorders_block = "\n".join([f"- {o}" for o in orders_list])
+    
+    # 🛡️ 把今日盈亏结算挂在阵地扫描模块的最后面
+    pnl_icon = "🔴" if total_est_pnl >= 0 else "🟢"
+    pnl_sign = "+" if total_est_pnl >= 0 else ""
+    orders_block += f"\n\n💰 **预估今日盈亏**: {pnl_icon} {pnl_sign}¥{total_est_pnl:.0f}"
     
     radar_signals = ai_json.get("radar_signals", [])
     if radar_signals:
