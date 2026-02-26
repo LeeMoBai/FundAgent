@@ -24,7 +24,6 @@ def get_fund_nav_data(fund_code: str, target_date: str):
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
     sources_tried = []
 
-    # A: 东财 JS 暴力扫描
     try:
         url_web = f"http://fund.eastmoney.com/pingzhongdata/{fund_code}.js?v={int(time.time())}"
         resp = requests.get(url_web, headers=headers, timeout=5)
@@ -38,7 +37,6 @@ def get_fund_nav_data(fund_code: str, target_date: str):
                 sources_tried.append(f"东财JS:{datetime.datetime.fromtimestamp(data_list[-1]['x']/1000).strftime('%Y-%m-%d')}")
     except: sources_tried.append("东财异常")
 
-    # B: 新浪 HTML 抠图
     try:
         url_sina = f"https://finance.sina.com.cn/fund/api/openapi.php/FundService.getFundNetValue?symbol={fund_code}"
         s_json = requests.get(url_sina, headers=headers, timeout=5).json()
@@ -48,7 +46,6 @@ def get_fund_nav_data(fund_code: str, target_date: str):
             sources_tried.append(f"新浪:{s_date}")
     except: sources_tried.append("新浪异常")
 
-    # C: 雪球 API
     try:
         url_dj = f"https://danjuanfunds.com/djapi/fund/nav/history/{fund_code}?size=5"
         dj_json = requests.get(url_dj, headers=headers, timeout=5).json()
@@ -61,7 +58,7 @@ def get_fund_nav_data(fund_code: str, target_date: str):
     return "", " | ".join(sources_tried)
 
 # ==========================================
-# 2. 暴力抓取 ETF 盘后数据 (极简新浪 K线直连版)
+# 2. 暴力抓取 ETF 盘后数据 (自带重试抗拉黑版)
 # ==========================================
 def get_etf_eod_data(proxy_code: str):
     result = {"close": "", "vol": "", "ma20": "", "ma60": ""}
@@ -70,39 +67,40 @@ def get_etf_eod_data(proxy_code: str):
     prefix = "sh" if proxy_code.startswith("5") else "sz"
     symbol = prefix + proxy_code
     
-    try:
-        # 🛡️ 绝杀技：直接去新浪底层拉取过去 65 天的 K 线 JSON 数组，自己算均线！
-        url_kline = f"https://money.finance.sina.com.cn/quotes_service/api/json_v2.php/CN_MarketData.getKLineData?symbol={symbol}&scale=240&ma=no&datalen=65"
-        resp = requests.get(url_kline, timeout=5)
-        kline_data = json.loads(resp.text)
-        
-        if kline_data and len(kline_data) > 0:
-            closes = [float(day['close']) for day in kline_data]
-            if len(closes) >= 20: result["ma20"] = round(sum(closes[-20:]) / 20.0, 4)
-            if len(closes) >= 60: result["ma60"] = round(sum(closes[-60:]) / 60.0, 4)
+    # 🛡️ 绝杀技：增加 3 次重试，防止短时间内被新浪 API 拦截
+    for attempt in range(3):
+        try:
+            url_kline = f"https://money.finance.sina.com.cn/quotes_service/api/json_v2.php/CN_MarketData.getKLineData?symbol={symbol}&scale=240&ma=no&datalen=65"
+            resp = requests.get(url_kline, timeout=5)
+            if resp.text and resp.text != 'null':
+                kline_data = json.loads(resp.text)
+                if kline_data and len(kline_data) > 0:
+                    closes = [float(day['close']) for day in kline_data]
+                    if len(closes) >= 20: result["ma20"] = round(sum(closes[-20:]) / 20.0, 4)
+                    if len(closes) >= 60: result["ma60"] = round(sum(closes[-60:]) / 60.0, 4)
+                break # 成功抓到，跳出循环
+        except Exception:
+            time.sleep(1) # 被墙了就乖乖闭嘴等1秒
             
-        # 再去腾讯现价接口抢一个最精确的收盘价和成交额（万元转元）兜底
+    try:
         url_qt = f"http://qt.gtimg.cn/q={symbol}"
         qt_resp = requests.get(url_qt, timeout=3)
         qt_data = qt_resp.text.split('~')
         if len(qt_data) > 40:
             result["close"] = float(qt_data[3])
             result["vol"] = float(qt_data[37]) * 10000 
-            
-        print(f"   [ETF-OK] {proxy_code} 暴力计算完毕: MA20={result['ma20']}, MA60={result['ma60']}")
-    except Exception as e:
-        print(f"   [ETF-Error] {proxy_code} 抓取失败: {e}")
-        
+    except: pass
+    
+    print(f"   [ETF] {proxy_code} 拉取完毕: MA20={result['ma20']}, MA60={result['ma60']}")
     return result
 
 # ==========================================
-# 3. 核心清算主逻辑
+# 3. 核心清算主逻辑 (参数化 ID)
 # ==========================================
 def run_eod_settlement():
     tz_bj = pytz.timezone('Asia/Shanghai')
     now_bj = datetime.datetime.now(tz_bj)
     
-    # 智能时差偏移 (18:00 前跑算昨天的补漏)
     if now_bj.hour < 18:
         target_date_obj = now_bj - datetime.timedelta(days=1)
         while target_date_obj.weekday() > 4: target_date_obj -= datetime.timedelta(days=1)
@@ -110,10 +108,15 @@ def run_eod_settlement():
     else:
         today_str = now_bj.strftime('%Y-%m-%d')
         
-    print(f"🚀 启动 V4.9 极简暴力清算 (结算目标: {today_str})")
+    print(f"🚀 启动 V5.0 参数化极简清算 (结算目标: {today_str})")
     
     gc = get_gspread_client()
-    sh = gc.open_by_key("1kKz9snuCeMSKwBCBGRBBUo8P-04C72Dx5Pt3ArYvtRw") # <--- 【总司令注意：填入您的 ID】
+    
+    # 🌟【参数化改造】：不再写死 ID，直接去环境变量里拿！
+    sheet_id = os.environ.get("GOOGLE_SHEET_ID")
+    if not sheet_id:
+        raise ValueError("❌ 缺失环境变量 GOOGLE_SHEET_ID！请检查 Github Secrets 配置。")
+    sh = gc.open_by_key(sheet_id) 
     
     ws_dash = sh.worksheet("Dashboard")
     dash_data = ws_dash.get_all_values()
@@ -151,7 +154,7 @@ def run_eod_settlement():
             if eod["ma60"] != "" and idx_ma60 != -1: updates.append({'range': rowcol_to_a1(row_idx, idx_ma60 + 1), 'values': [[eod["ma60"]]]})
         
         eod_json_state[fund_name] = fund_state
-        time.sleep(0.3)
+        time.sleep(0.5)
 
     if updates: ws_dash.batch_update(updates)
 
@@ -173,6 +176,7 @@ def run_eod_settlement():
                 eod = get_etf_eod_data(r_proxy_code)
                 if eod["ma20"] != "" and r_idx_ma20 != -1: r_updates.append({'range': rowcol_to_a1(row_idx, r_idx_ma20 + 1), 'values': [[eod["ma20"]]]})
                 if eod["ma60"] != "" and r_idx_ma60 != -1: r_updates.append({'range': rowcol_to_a1(row_idx, r_idx_ma60 + 1), 'values': [[eod["ma60"]]]})
+                time.sleep(0.5) # 🛡️ 雷达扫描时也加上减速带，防止被拉黑
         if r_updates: 
             ws_radar.batch_update(r_updates)
             print("📡 雷达监控表更新完毕！")
@@ -202,7 +206,6 @@ def run_eod_settlement():
     except Exception as e:
         print(f"   [!] History 补漏异常: {e}")
 
-    # 归档 JSON
     archive_json = {
         "timestamp": datetime.datetime.now(pytz.timezone('Asia/Shanghai')).strftime('%Y-%m-%d %H:%M:%S'),
         "target_date": today_str,
@@ -211,7 +214,7 @@ def run_eod_settlement():
     os.makedirs("logs", exist_ok=True)
     with open(f"logs/EOD_State_{today_str.replace('-','')}.json", "w", encoding="utf-8") as f:
         json.dump(archive_json, f, ensure_ascii=False, indent=2)
-    print("✅ EOD 极简暴力清算全部完成！")
+    print("✅ EOD 参数化极简清算全部完成！")
 
 if __name__ == "__main__":
     run_eod_settlement()
