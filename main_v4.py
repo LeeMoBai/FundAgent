@@ -28,13 +28,13 @@ def get_google_credentials():
     return Credentials.from_service_account_info(creds_dict, scopes=scopes)
 
 # ==========================================
-# 1. 宏观水位引擎
+# 1. 宏观水位引擎 (恢复纳指 QQQ 数据抓取)
 # ==========================================
 def get_macro_waterlevel():
     tickers = {
         "美债(US10Y)": "^TNX", "BTC": "BTC-USD", "KOSPI": "^KS11",
-        "黄金(XAU)": "GC=F", "纳指(NQ)": "NQ=F", "恐慌指数(VIX)": "^VIX",
-        "离岸人民币(USD/CNH)": "USDCNH=X", "XBI": "XBI"
+        "黄金(XAU)": "GC=F", "纳指(NQ)": "NQ=F", "纳指ETF(QQQ)": "QQQ", 
+        "恐慌指数(VIX)": "^VIX", "离岸人民币(USD/CNH)": "USDCNH=X", "XBI": "XBI"
     }
     macro_strs = []
     macro_raw_dict = {} 
@@ -64,11 +64,13 @@ def get_macro_waterlevel():
             except: pass
         return name, f"{name}:暂无", None, None
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=9) as executor:
         futures = {executor.submit(fetch_ticker, k, v): k for k, v in tickers.items()}
         for fut in concurrent.futures.as_completed(futures):
             name, disp_str, raw_val, raw_pct = fut.result()
-            macro_strs.append(disp_str)
+            # 隐藏 QQQ 不在宏观总览里刷屏，但保留其底层数据供后续调用
+            if name != "纳指ETF(QQQ)" and "暂无" not in disp_str:
+                macro_strs.append(disp_str)
             if raw_val is not None: macro_raw_dict[name] = {"value": raw_val, "pct": raw_pct}
     return " | ".join(macro_strs), macro_raw_dict
 
@@ -165,23 +167,35 @@ def collect_v4_intelligence(gc):
         eod_ma20_str = row[get_idx("[EOD]MA20点位")]
         eod_ma60_str = row[get_idx("[EOD]MA60点位")]
         
-        rules_list.append(f"- 【{fund_name}】 定性逻辑: {logic} | 定量底线: {bottom_line}")
-        curr_p, pct, vol_str, _ = get_realtime_data(proxy_code, eod_vol)
+       rules_list.append(f"- 【{fund_name}】 定性逻辑: {logic} | 定量底线: {bottom_line}")
         
-        # 🛡️ 下面这些行必须和上面的 curr_p 严格保持左侧对齐 (8个空格)
         hold_value = "空仓"
         status_tag = "在持"
         if shares:
             try:
-                if float(shares) <= 0: 
-                    status_tag = "已空仓"
+                if float(shares) <= 0: status_tag = "已空仓"
                 else: 
                     price_to_calc = float(nav_str) if nav_str else float(cost)
                     hold_value = f"¥{int(float(shares) * price_to_calc) / 1000:.1f}k"
             except: pass
-        else: 
-            status_tag = "已空仓"
+        else: status_tag = "已空仓"
 
+        # 🛡️ 极简 QDII 特判：如果是美股，不看A股盘中虚假走势，直接看外盘！
+        if "纳斯达克" in fund_name or "标普" in fund_name:
+            qqq_pct = macro_raw_dict.get("纳指ETF(QQQ)", {}).get("pct")
+            nq_pct = macro_raw_dict.get("纳指(NQ)", {}).get("pct")
+            qqq_str = f"{qqq_pct:+.2f}%" if qqq_pct is not None else "未知"
+            nq_str = f"{nq_pct:+.2f}%" if nq_pct is not None else "未知"
+            
+            hard_str_compact = f"昨夜 {qqq_str} | 期指 {nq_str} | 仓:{hold_value}"
+            portfolio_status.append(f"- {fund_name} ({proxy_code}): 状态:{status_tag} | {hard_str_compact}")
+            hard_data_dict[fund_name] = hard_str_compact
+            portfolio_raw_list.append({"name": fund_name, "proxy": proxy_code, "pct": nq_pct, "vol": "QDII无量比"})
+            continue # 🚀 直接跳过，不往下走 A 股盘口抓取
+
+        # === 以下是正常 A股/港股 的盘口抓取 ===
+        curr_p, pct, vol_str, _ = get_realtime_data(proxy_code, eod_vol)
+        
         dev_str = ""
         if curr_p:
             dev_items = []
@@ -198,14 +212,12 @@ def collect_v4_intelligence(gc):
             dev_str = " | ".join(dev_items)
 
         pct_str = f"{pct:+.2f}%" if pct is not None else "停牌"
-        
-        # 🛡️ 微信极简格式恢复 (去掉多余字眼)
         hard_str_compact = f"{pct_str} | 仓:{hold_value} | {vol_str}"
         if dev_str: hard_str_compact += f" | {dev_str}"
         
         portfolio_status.append(f"- {fund_name} ({proxy_code}): 状态:{status_tag} | {hard_str_compact}")
-        hard_data_dict[fund_name] = hard_str_compact # 存入供微信输出用的极简版
-        portfolio_raw_list.append({"name": fund_name, "proxy": proxy_code, "pct": pct, "vol": vol_str})
+        hard_data_dict[fund_name] = hard_str_compact
+        portfolio_raw_list.append({"name": fund_name, "proxy": proxy_code, "pct": pct, "vol": vol_str})})
 
     # 雷达监控扫荡
     radar_status = []
