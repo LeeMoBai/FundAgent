@@ -339,15 +339,16 @@ if __name__ == "__main__":
     else:
         wechat_radar_block = "\n\n【📡 雷达狩猎区】\n- 🟢 暂无标的触发绝杀扳机，继续耐心潜伏。"
 
-   ai_summary = ai_json.get("ai_summary", "")
+    # 🛡️ 下面这几行必须和上面的 else: 垂直对齐 (前面都是 4 个空格)
+    ai_summary = ai_json.get("ai_summary", "")
     doc_radar_analysis = ai_json.get("doc_radar_analysis", "暂无雷达深度分析。")
     doc_full_report = ai_json.get("doc_full_report", "暂无宏观分析。")
     
-    # 🛡️ 精准手术 3：生成当前东八区时间戳
     now_str = datetime.datetime.now(pytz.timezone('Asia/Shanghai')).strftime('%Y-%m-%d %H:%M:%S')
     
-    # 🛡️ 精准手术 4：把时间戳作为大标题塞进文档最顶端
     full_doc_body = f"""【🗓️ 战报生成时间：{now_str}】
+
+【🌍 全球水位】
 
 【🌍 全球水位】
 {macro_str}
