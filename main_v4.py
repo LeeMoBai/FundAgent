@@ -310,20 +310,23 @@ if __name__ == "__main__":
     md_prompt, rules_str, macro_str, hard_data_dict, macro_raw_dict, portfolio_raw_list = collect_v4_intelligence(gc)
     ai_json = ask_v4_tactical_agent(md_prompt, rules_str)
     
-    # 🛡️ 微信极简格式恢复：去掉 ** 加粗符号，恢复单行
+   # --- 1. 解析常规持仓指令 ---
     orders_list = []
     fund_decisions = ai_json.get("fund_decisions", {})
     for fund_name, hard_str in hard_data_dict.items():
         decision = fund_decisions.get(fund_name, {"action": "锁仓观望", "reason": "无指令回传。"})
         act = decision.get("action", "锁仓观望")
-        rsn = decision.get("reason", "")
+        
+        # 🛡️ 精准手术 1：强力碾碎 AI 吐出的隐形换行符
+        rsn = decision.get("reason", "").replace('\n', '').strip()
         
         icon = "🟢"
         if any(x in act for x in ["清仓", "止损"]): icon = "🚨"
         elif any(x in act for x in ["狙击", "定投", "左侧"]): icon = "🔥"
         elif "静默" in act: icon = "🔕"
         
-        orders_list.append(f"{icon} {fund_name}：{act} | {hard_str} | {rsn}")
+        # 🛡️ 精准手术 2：把基金名称两边的 ** 加粗符号请回来
+        orders_list.append(f"{icon} **{fund_name}**：{act} | {hard_str} | {rsn}")
     
     orders_block = "\n".join([f"- {o}" for o in orders_list])
     
@@ -336,11 +339,17 @@ if __name__ == "__main__":
     else:
         wechat_radar_block = "\n\n【📡 雷达狩猎区】\n- 🟢 暂无标的触发绝杀扳机，继续耐心潜伏。"
 
-    ai_summary = ai_json.get("ai_summary", "")
+   ai_summary = ai_json.get("ai_summary", "")
     doc_radar_analysis = ai_json.get("doc_radar_analysis", "暂无雷达深度分析。")
     doc_full_report = ai_json.get("doc_full_report", "暂无宏观分析。")
     
-    full_doc_body = f"""【🌍 全球水位】
+    # 🛡️ 精准手术 3：生成当前东八区时间戳
+    now_str = datetime.datetime.now(pytz.timezone('Asia/Shanghai')).strftime('%Y-%m-%d %H:%M:%S')
+    
+    # 🛡️ 精准手术 4：把时间戳作为大标题塞进文档最顶端
+    full_doc_body = f"""【🗓️ 战报生成时间：{now_str}】
+
+【🌍 全球水位】
 {macro_str}
 
 【🧠 AI 首席决断】
