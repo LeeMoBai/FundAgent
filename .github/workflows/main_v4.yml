@@ -3,7 +3,7 @@ name: V4.0 Daytime Tactical Hub (首席风控官)
 on:
   schedule:
     # 每天北京时间 14:37 (UTC时间 06:37)，周一到周五运行
-    - cron: '37 6 * * 1-5'
+    - cron: '37 5 * * 1-5'
   workflow_dispatch: # 保留手动触发按钮，方便随时演习
 
 jobs:
