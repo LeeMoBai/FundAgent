@@ -162,23 +162,26 @@ def collect_v4_intelligence(gc):
         bottom_line = row[get_idx("定量证伪底线")]
         cost = row[get_idx("持仓成本")]
         shares = row[get_idx("持有份额")]
-        nav_str = row[get_idx("最新净值")] # 🛡️ 手术 1：把最新净值抓出来
+        nav_str = row[get_idx("最新净值")]
         eod_vol = row[get_idx("[EOD]昨成交额")]
         eod_ma20_str = row[get_idx("[EOD]MA20点位")]
         eod_ma60_str = row[get_idx("[EOD]MA60点位")]
         
-       rules_list.append(f"- 【{fund_name}】 定性逻辑: {logic} | 定量底线: {bottom_line}")
+        # 🛡️ 严格保持 8 个空格的缩进
+        rules_list.append(f"- 【{fund_name}】 定性逻辑: {logic} | 定量底线: {bottom_line}")
         
         hold_value = "空仓"
         status_tag = "在持"
         if shares:
             try:
-                if float(shares) <= 0: status_tag = "已空仓"
+                if float(shares) <= 0: 
+                    status_tag = "已空仓"
                 else: 
                     price_to_calc = float(nav_str) if nav_str else float(cost)
                     hold_value = f"¥{int(float(shares) * price_to_calc) / 1000:.1f}k"
             except: pass
-        else: status_tag = "已空仓"
+        else: 
+            status_tag = "已空仓"
 
         # 🛡️ 极简 QDII 特判：如果是美股，不看A股盘中虚假走势，直接看外盘！
         if "纳斯达克" in fund_name or "标普" in fund_name:
