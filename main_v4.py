@@ -310,7 +310,7 @@ def ask_v4_tactical_agent(md_prompt: str, rules_str: str) -> dict:
     return json.loads(response.text)
 
 # ==========================================
-# 5. 通知渠道 (V5.1 格式修复版)
+# 5. 通知渠道
 # ==========================================
 def update_google_doc(creds, content: str, document_id: str):
     try:
@@ -318,12 +318,16 @@ def update_google_doc(creds, content: str, document_id: str):
         docs_service = build('docs', 'v1', credentials=creds)
         text_to_insert = content + "\n\n" + "="*40 + "\n\n"
         
-        # 🛡️ 计算 UTF-16 长度 (防止带有 Emoji 时导致 Google Doc 接口崩溃)
+        # 计算整体内容的 UTF-16 长度
         utf16_len = len(text_to_insert.encode('utf-16-le')) // 2
+        
+        # 🛡️ 寻找第一行（标题）的结束位置
+        first_line_end = text_to_insert.find('\n') + 1 
+        title_utf16_len = len(text_to_insert[:first_line_end].encode('utf-16-le')) // 2
         
         requests_body = [
             {'insertText': {'location': {'index': 1}, 'text': text_to_insert}},
-            # 🛡️ 强制格式刷：把插入的文字全部重置为常规正文 (NORMAL_TEXT)，避免被原来文档首行的标题格式污染
+            # 1. 强力格式刷：先把所有内容压平为正文 (NORMAL_TEXT) 和 10号字
             {
                 'updateParagraphStyle': {
                     'range': {'startIndex': 1, 'endIndex': 1 + utf16_len},
@@ -336,6 +340,14 @@ def update_google_doc(creds, content: str, document_id: str):
                     'range': {'startIndex': 1, 'endIndex': 1 + utf16_len},
                     'textStyle': {'fontSize': {'magnitude': 10, 'unit': 'PT'}, 'bold': False},
                     'fields': 'fontSize,bold'
+                }
+            },
+            # 2. 🛡️ 皇冠加冕：单独把第一行提拔为二级标题 (HEADING_2)，让它在左侧大纲显示！
+            {
+                'updateParagraphStyle': {
+                    'range': {'startIndex': 1, 'endIndex': 1 + title_utf16_len},
+                    'paragraphStyle': {'namedStyleType': 'HEADING_2'},
+                    'fields': 'namedStyleType'
                 }
             }
         ]
@@ -387,7 +399,7 @@ if __name__ == "__main__":
         # 🛡️ 精准手术 2：把基金名称两边的 ** 加粗符号请回来
         orders_list.append(f"{icon} **{fund_name}**：{act} | {hard_str} | {rsn}")
     
-    oorders_block = "\n".join([f"- {o}" for o in orders_list])
+    orders_block = "\n".join([f"- {o}" for o in orders_list])
     
     # 🛡️ 把今日盈亏结算挂在阵地扫描模块的最后面
     pnl_icon = "🔴" if total_est_pnl >= 0 else "🟢"
