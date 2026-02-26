@@ -220,7 +220,7 @@ def collect_v4_intelligence(gc):
         
         portfolio_status.append(f"- {fund_name} ({proxy_code}): 状态:{status_tag} | {hard_str_compact}")
         hard_data_dict[fund_name] = hard_str_compact
-        portfolio_raw_list.append({"name": fund_name, "proxy": proxy_code, "pct": pct, "vol": vol_str})})
+        portfolio_raw_list.append({"name": fund_name, "proxy": proxy_code, "pct": pct, "vol": vol_str})
 
     # 雷达监控扫荡
     radar_status = []
