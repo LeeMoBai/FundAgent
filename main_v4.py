@@ -347,9 +347,6 @@ if __name__ == "__main__":
     now_str = datetime.datetime.now(pytz.timezone('Asia/Shanghai')).strftime('%Y-%m-%d %H:%M:%S')
     
     full_doc_body = f"""【🗓️ 战报生成时间：{now_str}】
-
-【🌍 全球水位】
-
 【🌍 全球水位】
 {macro_str}
 
