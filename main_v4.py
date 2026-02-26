@@ -150,7 +150,7 @@ def collect_v4_intelligence(gc):
     def get_idx(kw): return next((i for i, h in enumerate(headers) if kw in h), -1)
     
     portfolio_status, hard_data_dict, portfolio_raw_list, rules_list = [], {}, [], []
-    
+    total_est_pnl = 0.0 # 🛡️ 新增：今日预估总盈亏池
     for row in dash_data[1:]:
         if not row or not any(row): continue
         fund_name = row[get_idx("基金名称")]
@@ -172,21 +172,28 @@ def collect_v4_intelligence(gc):
         
         hold_value = "空仓"
         status_tag = "在持"
+        base_value = 0.0 # 🛡️ 新增：记录真实本金用于算盈亏
         if shares:
             try:
                 if float(shares) <= 0: 
                     status_tag = "已空仓"
                 else: 
                     price_to_calc = float(nav_str) if nav_str else float(cost)
-                    hold_value = f"¥{int(float(shares) * price_to_calc) / 1000:.1f}k"
+                    base_value = float(shares) * price_to_calc
+                    hold_value = f"¥{int(base_value) / 1000:.1f}k"
             except: pass
         else: 
             status_tag = "已空仓"
 
-        # 🛡️ 极简 QDII 特判：如果是美股，不看A股盘中虚假走势，直接看外盘！
+        # 🛡️ 极简 QDII 特判：如果是美股，直接看外盘！
         if "纳斯达克" in fund_name or "标普" in fund_name:
             qqq_pct = macro_raw_dict.get("纳指ETF(QQQ)", {}).get("pct")
             nq_pct = macro_raw_dict.get("纳指(NQ)", {}).get("pct")
+            
+            # 💰 累加 QDII 盈亏 (以外盘期指为准)
+            if nq_pct is not None and base_value > 0:
+                total_est_pnl += base_value * (nq_pct / 100)
+                
             qqq_str = f"{qqq_pct:+.2f}%" if qqq_pct is not None else "未知"
             nq_str = f"{nq_pct:+.2f}%" if nq_pct is not None else "未知"
             
@@ -194,10 +201,14 @@ def collect_v4_intelligence(gc):
             portfolio_status.append(f"- {fund_name} ({proxy_code}): 状态:{status_tag} | {hard_str_compact}")
             hard_data_dict[fund_name] = hard_str_compact
             portfolio_raw_list.append({"name": fund_name, "proxy": proxy_code, "pct": nq_pct, "vol": "QDII无量比"})
-            continue # 🚀 直接跳过，不往下走 A 股盘口抓取
+            continue 
 
         # === 以下是正常 A股/港股 的盘口抓取 ===
         curr_p, pct, vol_str, _ = get_realtime_data(proxy_code, eod_vol)
+        
+        # 💰 累加 A股/港股 盈亏 (以场内 ETF 涨跌幅为准)
+        if pct is not None and base_value > 0:
+            total_est_pnl += base_value * (pct / 100)
         
         dev_str = ""
         if curr_p:
