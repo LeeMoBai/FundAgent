@@ -273,12 +273,12 @@ def collect_v4_intelligence(gc) -> tuple:
     return md_prompt, "\n".join(ai_prompt_rules), macro_str, hard_data_dict, macro_raw_dict, portfolio_raw_list
 
 # ==========================================
-# 4. AI 首席风控官 (V4.2 植入终极物理熔断器)
+# 4. AI 首席风控官 (V4.8 核心纪律与双轨雷达版)
 # ==========================================
 def ask_v4_tactical_agent(md_prompt: str, rules_str: str) -> dict:
     client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
     prompt = f"""
-# Role: 顶级对冲基金量化总监 (FundAgent V4.2)
+# Role: 顶级对冲基金量化总监 (FundAgent V4.8)
 当前是 14:45（A股尾盘15分钟，美股盘前）。请基于盘口硬数据和宏观水位，严格执行纪律，输出冷酷、专业的决断。
 
 【输入盘口情报】：
@@ -293,6 +293,7 @@ def ask_v4_tactical_agent(md_prompt: str, rules_str: str) -> dict:
 4. **⚠️ 均线防噪法则 (Whipsaw Filter)**：任何资产的 MA20/MA60 乖离率在 [-1.5%, +1.5%] 区间内，统称为“均线粘合震荡区噪音”。绝对禁止仅凭此微小乖离率下达清仓指令。
 5. **铁血判决权**：必须严格比对《Google Sheet 宪法级纪律库》中的 `[定量证伪底线]`。若盘面数据未完全满足该底线设定的条件（如跌幅不够深或量比不够大），一律执行“锁仓观望”，严禁主观恐慌斩仓！
 6. **空仓限制**：状态为“【已空仓】”或仓位为 0 的标的，绝不可喊“卖出/清仓”。
+7. **📡 雷达池双轨汇报**：严格比对【雷达监控池】的【🎯扳机】条件。如果有标的触发扳机，必须在 `radar_signals` 中输出短警报（供微信推送）；同时，必须在 `doc_radar_analysis` 中对雷达池内的**所有**备选标的（无论是否触发）进行深度的盘口与均线解析（供日记存档）。
 
 # 输出要求 (必须是合法、可解析的 JSON 格式)：
 绝不允许在输出中包含 ```json 标签或任何 Markdown 格式，必须直接以 {{ 开头，}} 结尾！
@@ -304,7 +305,15 @@ def ask_v4_tactical_agent(md_prompt: str, rules_str: str) -> dict:
       "reason": "严格结合 [定量证伪底线] 校验结果与宏观熔断逻辑的执行理由（限30字以内）。"
     }}
   }},
-  "doc_full_report": "### 🌍 宏观诊断与全球阵地推演\n(此处写入深度分析，必须长达800字，强制结合 VIX 恐慌情绪、人民币汇率暗流、BTC 流动性及美债收益率进行机构级穿透推演。)"
+  "radar_signals": [
+    {{
+      "name": "有色金属",
+      "signal": "🔥 触发首仓扳机",
+      "reason": "已缩量回踩20日线，符合狙击条件，建议动用备用金进场。"
+    }}
+  ],
+  "doc_radar_analysis": "### 📡 雷达池深度扫描报告\\n(对雷达池内所有标的当前均线状态、宏观相关性及潜在狙击时机进行详细分析，不少于200字。)",
+  "doc_full_report": "### 🌍 宏观诊断与全球阵地推演\\n(此处写入深度分析，必须长达800字，强制结合 VIX 恐慌情绪、人民币汇率暗流、BTC 流动性及美债收益率进行机构级穿透推演。)"
 }}
     """
     response = client.models.generate_content(
@@ -312,7 +321,7 @@ def ask_v4_tactical_agent(md_prompt: str, rules_str: str) -> dict:
         contents=prompt, 
         config=genai.types.GenerateContentConfig(
             temperature=0.1,
-            response_mime_type="application/json"
+            response_mime_type="application/json" # 再次强制校验JSON
         )
     )
     return json.loads(response.text)
@@ -408,24 +417,38 @@ if __name__ == "__main__":
     md_prompt, rules_str, macro_str, hard_data_dict, macro_raw_dict, portfolio_raw_list = collect_v4_intelligence(gc)
     ai_json = ask_v4_tactical_agent(md_prompt, rules_str)
     
-    # 核心修复点：将硬数据与 AI 分析提前组合！
+    # --- 1. 解析常规持仓指令 ---
     orders_list = []
     fund_decisions = ai_json.get("fund_decisions", {})
     for fund_name, hard_str in hard_data_dict.items():
-        decision = fund_decisions.get(fund_name, {"action": "观望", "reason": "维持既定策略。"})
-        act = decision.get("action", "观望")
+        decision = fund_decisions.get(fund_name, {"action": "锁仓观望", "reason": "无指令回传。"})
+        act = decision.get("action", "锁仓观望")
         rsn = decision.get("reason", "")
         
         icon = "🟢"
-        if any(x in act for x in ["清仓", "止损", "卖出", "减仓"]): icon = "🚨"
-        elif any(x in act for x in ["买入", "加仓", "建仓", "定投"]): icon = "🔥"
+        if any(x in act for x in ["清仓", "止损出局"]): icon = "🚨"
+        elif any(x in act for x in ["狙击", "定投"]): icon = "🔥"
+        elif "静默" in act: icon = "🔕"
         
         orders_list.append(f"{icon} **{fund_name}**：{act} | {hard_str} {rsn}")
     
     orders_block = "\n".join([f"- {o}" for o in orders_list])
     
+    # --- 2. 解析雷达狙击警报 (专属给微信的短消息) ---
+    radar_signals = ai_json.get("radar_signals", [])
+    if radar_signals:
+        radar_list = []
+        for rs in radar_signals:
+            radar_list.append(f"🎯 **{rs.get('name')}**: {rs.get('signal')} | {rs.get('reason')}")
+        wechat_radar_block = "\n\n【📡 雷达备用金狩猎区】\n" + "\n".join([f"- {r}" for r in radar_list])
+    else:
+        wechat_radar_block = "\n\n【📡 雷达备用金狩猎区】\n- 🟢 暂无标的触发绝杀扳机，继续耐心潜伏。"
+
     ai_summary = ai_json.get("ai_summary", "")
-    doc_full_report = ai_json.get("doc_full_report", "")
+    
+    # --- 3. 提取长篇深度研报 (专属给 Google Docs) ---
+    doc_radar_analysis = ai_json.get("doc_radar_analysis", "暂无雷达深度分析。")
+    doc_full_report = ai_json.get("doc_full_report", "暂无宏观分析。")
     
     # 【拼装给 Google Docs 的“全家桶合影”】
     full_doc_body = f"""【🌍 全球水位】
@@ -434,26 +457,27 @@ if __name__ == "__main__":
 【🧠 AI 首席决断】
 {ai_summary}
 
-【⚡ 全阵地扫描与指令 (包含盘口硬数据)】
+【⚡ 核心持仓扫描与指令 (盘口硬数据)】
 {orders_block}
 
-【📝 深度宏观穿透研报】
+{doc_radar_analysis}
+
 {doc_full_report}
 """
     
-    # 把全家桶发给 Google Doc
+    # 发送给 Google Doc (包含几千字深度报告)
     doc_link = update_google_doc(creds, full_doc_body, MY_DOC_ID)
     
-    # 把精简版发给微信
-    notify_wechat(macro_str, ai_summary, orders_block, doc_link)
+    # 发送给企业微信 (只带精简的指令和雷达触发警报)
+    notify_wechat(macro_str, ai_summary, orders_block + wechat_radar_block, doc_link)
     
+    # JSON 沉淀
     archive_json = {
         "timestamp": datetime.datetime.now(pytz.timezone('Asia/Shanghai')).strftime('%Y-%m-%d %H:%M:%S'),
         "state_macro": macro_raw_dict,
         "state_portfolio": portfolio_raw_list,
         "action_ai_decision": ai_json
     }
-    
     os.makedirs("logs", exist_ok=True)
     with open(f"logs/AI_Trade_Log_{datetime.datetime.now().strftime('%Y%m%d')}.json", "w", encoding="utf-8") as f:
         json.dump(archive_json, f, ensure_ascii=False, indent=2)
