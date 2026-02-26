@@ -118,7 +118,7 @@ def run_eod_settlement():
     print(f"🚀 启动 V4.7 暴力清算中枢 (结算目标: {today_str})")
     
     gc = get_gspread_client()
-    sh = gc.open_by_key("请在这里填入您的表格ID") # <--- 【总司令注意：务必填入您的 Google Sheet ID】
+    sh = gc.open_by_key("1kKz9snuCeMSKwBCBGRBBUo8P-04C72Dx5Pt3ArYvtRw") # <--- 【总司令注意：务必填入您的 Google Sheet ID】
     
     ws_dash = sh.worksheet("Dashboard")
     dash_data = ws_dash.get_all_values()
