@@ -28,6 +28,7 @@ jobs:
       - name: 🌙 执行 EOD 静默清算 (Run Script)
         env:
           GCP_SERVICE_ACCOUNT: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }} # <--- 加上这一行！
         run: python eod_main_v4.py
       - name: 🗄️ 归档今日 EOD 结算 JSON (保存火种)
         run: |
