@@ -1,4 +1,4 @@
-name: V4.0 Daytime Tactical Hub (首席风控官)
+name: V5.0 Daytime Tactical Hub (首席风控官)
 
 on:
   schedule:
@@ -25,11 +25,18 @@ jobs:
         run: |
           pip install -r requirements.txt
 
-      - name: 🚀 执行 V4.0 空战决断
+      - name: 🚀 执行 V5.0 空战决断
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          WECHAT_ROBOT_KEY: ${{ secrets.WECHAT_ROBOT_KEY }}
           GCP_SERVICE_ACCOUNT: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+          
+          # 🌟 变量重定向映射：将您原有的 ROBOT_KEY 直接喂给 Python 需要的 WECHAT_WEBHOOK
+          WECHAT_WEBHOOK: ${{ secrets.WECHAT_ROBOT_KEY }}
+          
+          # 🌟 新增的双子星文档库 ID 参数 (请确保在 Github Secrets 里已添加这两个变量)
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+          GOOGLE_DOC_ID: ${{ secrets.GOOGLE_DOC_ID }}
+          
         run: python main_v4.py
 
       - name: 🗄️ 归档今日决策 JSON (保存火种)
@@ -38,5 +45,5 @@ jobs:
           git config --local user.name "GitHub Action"
           # 将 logs 文件夹下新生成的 JSON 存入代码仓库
           git add logs/*.json
-          git commit -m "🤖 自动归档: V4.0 每日风控决策 JSON" || echo "今日无新决策或文件未变动"
+          git commit -m "🤖 自动归档: V5.0 每日风控决策 JSON" || echo "今日无新决策或文件未变动"
           git push
