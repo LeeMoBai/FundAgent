@@ -160,6 +160,7 @@ def collect_v4_intelligence(gc):
         bottom_line = row[get_idx("定量证伪底线")]
         cost = row[get_idx("持仓成本")]
         shares = row[get_idx("持有份额")]
+        nav_str = row[get_idx("最新净值")] # 🛡️ 手术 1：把最新净值抓出来
         eod_vol = row[get_idx("[EOD]昨成交额")]
         eod_ma20_str = row[get_idx("[EOD]MA20点位")]
         eod_ma60_str = row[get_idx("[EOD]MA60点位")]
@@ -167,12 +168,16 @@ def collect_v4_intelligence(gc):
         rules_list.append(f"- 【{fund_name}】 定性逻辑: {logic} | 定量底线: {bottom_line}")
         curr_p, pct, vol_str, _ = get_realtime_data(proxy_code, eod_vol)
         
-        hold_value = "空仓"
+       hold_value = "空仓"
         status_tag = "在持"
-        if shares and cost:
+        if shares:
             try:
-                if float(shares) <= 0: status_tag = "已空仓"
-                else: hold_value = f"¥{int(float(shares) * float(cost)) / 1000:.1f}k"
+                if float(shares) <= 0: 
+                    status_tag = "已空仓"
+                else: 
+                    # 🛡️ 手术 2：优先用最新净值算真实市值，如果没抓到净值再拿成本兜底
+                    price_to_calc = float(nav_str) if nav_str else float(cost)
+                    hold_value = f"¥{int(float(shares) * price_to_calc) / 1000:.1f}k"
             except: pass
         else: status_tag = "已空仓"
 
