@@ -168,18 +168,19 @@ def collect_v4_intelligence(gc):
         rules_list.append(f"- 【{fund_name}】 定性逻辑: {logic} | 定量底线: {bottom_line}")
         curr_p, pct, vol_str, _ = get_realtime_data(proxy_code, eod_vol)
         
-       hold_value = "空仓"
+        # 🛡️ 下面这些行必须和上面的 curr_p 严格保持左侧对齐 (8个空格)
+        hold_value = "空仓"
         status_tag = "在持"
         if shares:
             try:
                 if float(shares) <= 0: 
                     status_tag = "已空仓"
                 else: 
-                    # 🛡️ 手术 2：优先用最新净值算真实市值，如果没抓到净值再拿成本兜底
                     price_to_calc = float(nav_str) if nav_str else float(cost)
                     hold_value = f"¥{int(float(shares) * price_to_calc) / 1000:.1f}k"
             except: pass
-        else: status_tag = "已空仓"
+        else: 
+            status_tag = "已空仓"
 
         dev_str = ""
         if curr_p:
