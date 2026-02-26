@@ -298,7 +298,7 @@ def ask_v4_tactical_agent(md_prompt: str, rules_str: str) -> dict:
     return json.loads(response.text)
 
 # ==========================================
-# 5. 通知渠道 (保留您的微信/Doc推流逻辑)
+# 5. 通知渠道 (V5.1 微信链接智能组装版)
 # ==========================================
 def update_google_doc(creds, content: str, document_id: str):
     try:
@@ -306,7 +306,7 @@ def update_google_doc(creds, content: str, document_id: str):
         docs_service = build('docs', 'v1', credentials=creds)
         requests_body = [{'insertText': {'location': {'index': 1}, 'text': content + "\n\n" + "="*40 + "\n\n"}}]
         docs_service.documents().batchUpdate(documentId=document_id, body={'requests': requests_body}).execute()
-        return f"[https://docs.google.com/document/d/](https://docs.google.com/document/d/){document_id}/edit"
+        return f"https://docs.google.com/document/d/{document_id}/edit"
     except Exception as e:
         print(f"Doc更新失败: {e}")
         return ""
@@ -314,9 +314,18 @@ def update_google_doc(creds, content: str, document_id: str):
 def notify_wechat(macro_str, ai_summary, orders_block, doc_link):
     webhook = os.environ.get("WECHAT_WEBHOOK")
     if not webhook: return
+    
+    # 🛡️ 核心修复：如果用户填入的 Secret 没有 https:// 前缀，自动将其识别为纯 Key 并拼接成完整 URL！
+    if not webhook.startswith("http"):
+        webhook = f"https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key={webhook.strip()}"
+        
     content = f"【🏦 FundAgent V5.0 午盘风控】\n\n🌍 宏观水位:\n{macro_str}\n\n🧠 AI 首席决断:\n{ai_summary}\n\n⚡ 阵地扫描与指令:\n{orders_block}\n\n📝 深度研报:\n{doc_link}"
-    requests.post(webhook, json={"msgtype": "text", "text": {"content": content}})
-
+    
+    try:
+        requests.post(webhook, json={"msgtype": "text", "text": {"content": content}}, timeout=5)
+        print("   [✅] 微信前线战报发送成功！")
+    except Exception as e:
+        print(f"   [!] 微信发送异常: {e}")
 # ==========================================
 # 6. 终极组装与起爆
 # ==========================================
