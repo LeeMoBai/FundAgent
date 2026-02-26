@@ -190,9 +190,9 @@ def collect_v4_intelligence(gc):
             qqq_pct = macro_raw_dict.get("纳指ETF(QQQ)", {}).get("pct")
             nq_pct = macro_raw_dict.get("纳指(NQ)", {}).get("pct")
             
-            # 💰 累加 QDII 盈亏 (以外盘期指为准)
-            if nq_pct is not None and base_value > 0:
-                total_est_pnl += base_value * (nq_pct / 100)
+           # 💰 累加 QDII 盈亏 (以昨夜美股真实涨跌为准，这才符合今晚净值更新逻辑)
+            if qqq_pct is not None and base_value > 0:
+                total_est_pnl += base_value * (qqq_pct / 100)
                 
             qqq_str = f"{qqq_pct:+.2f}%" if qqq_pct is not None else "未知"
             nq_str = f"{nq_pct:+.2f}%" if nq_pct is not None else "未知"
