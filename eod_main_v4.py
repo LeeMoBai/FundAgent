@@ -96,15 +96,29 @@ def get_etf_eod_data(proxy_code: str):
     return result
 
 # ==========================================
-# 3. 核心清算主逻辑 (无任何省略，全量覆盖)
+# 3. 核心清算主逻辑 (V4.7 智能时差偏移版)
 # ==========================================
 def run_eod_settlement():
     tz_bj = pytz.timezone('Asia/Shanghai')
-    today_str = datetime.datetime.now(tz_bj).strftime('%Y-%m-%d')
-    print(f"🚀 启动 V4.6 暴力清算中枢 (目标日期: {today_str})")
+    now_bj = datetime.datetime.now(tz_bj)
+    
+    # ⏳ 【核心修复：智能时差偏移逻辑】
+    # 如果在晚上 18:00 之前运行脚本，说明是在为“昨天”的数据补漏
+    if now_bj.hour < 18:
+        target_date_obj = now_bj - datetime.timedelta(days=1)
+        # 遇到周末自动退回周五 (周末没有净值)
+        while target_date_obj.weekday() > 4: 
+            target_date_obj -= datetime.timedelta(days=1)
+        today_str = target_date_obj.strftime('%Y-%m-%d')
+        print(f"🌅 检测到早间补漏模式，目标日期自动回退至: {today_str}")
+    else:
+        today_str = now_bj.strftime('%Y-%m-%d')
+        print(f"🌙 检测到夜间正常结算模式，目标日期: {today_str}")
+    
+    print(f"🚀 启动 V4.7 暴力清算中枢 (结算目标: {today_str})")
     
     gc = get_gspread_client()
-    sh = gc.open_by_key("1kKz9snuCeMSKwBCBGRBBUo8P-04C72Dx5Pt3ArYvtRw") # <--- 【总司令注意：务必填入您的 Google Sheet ID】
+    sh = gc.open_by_key("请在这里填入您的表格ID") # <--- 【总司令注意：务必填入您的 Google Sheet ID】
     
     ws_dash = sh.worksheet("Dashboard")
     dash_data = ws_dash.get_all_values()
@@ -126,7 +140,6 @@ def run_eod_settlement():
         print(f"🔍 正在暴力围剿: {fund_name}({fund_code})...")
         nav, log = get_fund_nav_data(fund_code, today_str)
         
-        # 准备装入 JSON 的字典
         fund_state = {"nav": nav, "last_source_log": log}
         
         if nav:
@@ -136,12 +149,11 @@ def run_eod_settlement():
         else:
             print(f"   [❌] 失败。原因: {log}")
             
-        # ETF 数据顺手抓取并塞进 JSON 和 表格
         proxy_raw = row[idx_proxy].strip() if idx_proxy != -1 else ""
         proxy_code = re.search(r'\d{6}', proxy_raw).group(0) if re.search(r'\d{6}', proxy_raw) else ""
         if proxy_code:
             eod = get_etf_eod_data(proxy_code)
-            fund_state.update(eod) # 把抓到的 close, vol, ma20, ma60 塞进 JSON
+            fund_state.update(eod)
             
             if eod["close"] != "" and idx_close != -1: updates.append({'range': rowcol_to_a1(row_idx, idx_close + 1), 'values': [[eod["close"]]]})
             if eod["vol"] != "" and idx_vol != -1: updates.append({'range': rowcol_to_a1(row_idx, idx_vol + 1), 'values': [[eod["vol"]]]})
@@ -153,7 +165,7 @@ def run_eod_settlement():
 
     if updates: ws_dash.batch_update(updates)
 
-    # --- 雷达监控表更新 (填补均线) ---
+    # --- 雷达监控表更新 ---
     try:
         ws_radar = sh.worksheet("雷达监控")
         radar_data = ws_radar.get_all_values()
@@ -179,32 +191,35 @@ def run_eod_settlement():
         ws_hist = sh.worksheet("History")
         hist_data = ws_hist.get_all_values()
         fund_codes_in_hist = hist_data[1]
-        is_today_exists = (len(hist_data) > 2 and hist_data[2][0] == today_str)
+        
+        # 判断我们要找的 today_str 是否已经存在于 History 第三行
+        is_target_row_exists = (len(hist_data) > 2 and hist_data[2][0] == today_str)
         
         new_row = [today_str]
         for code in fund_codes_in_hist[1:]:
             ckey = str(code).strip().zfill(6)
             new_row.append(nav_dict.get(ckey, ""))
         
-        if is_today_exists:
+        if is_target_row_exists:
             h_updates = []
             for i, val in enumerate(new_row[1:], start=2):
                 if val: h_updates.append({'range': rowcol_to_a1(3, i), 'values': [[val]]})
             if h_updates: ws_hist.batch_update(h_updates)
-            print("📊 History 表补全成功！")
+            print(f"📊 History 表 {today_str} 已存在，补全最新净值完成！")
         else:
             ws_hist.insert_row(new_row, 3)
-            print("📊 History 表新行插入成功！")
+            print(f"📊 History 表新行 {today_str} 插入成功！")
     except Exception as e:
         print(f"   [!] History 补漏异常: {e}")
 
-    # 生成绝对结算 JSON (此刻它绝对不再是空字典了！)
+    # 生成绝对结算 JSON
     archive_json = {
         "timestamp": datetime.datetime.now(pytz.timezone('Asia/Shanghai')).strftime('%Y-%m-%d %H:%M:%S'),
+        "target_date": today_str,
         "portfolio_eod": eod_json_state
     }
     os.makedirs("logs", exist_ok=True)
-    with open(f"logs/EOD_State_{datetime.datetime.now().strftime('%Y%m%d')}.json", "w", encoding="utf-8") as f:
+    with open(f"logs/EOD_State_{today_str.replace('-','')}.json", "w", encoding="utf-8") as f:
         json.dump(archive_json, f, ensure_ascii=False, indent=2)
     print("✅ EOD 结算全部完成！")
 
