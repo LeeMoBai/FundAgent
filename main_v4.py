@@ -73,39 +73,66 @@ def get_macro_waterlevel():
     return " | ".join(macro_strs), macro_raw_dict
 
 # ==========================================
-# 2. 极速盘口与量比核算
+# 2. 极速盘口与量比核算 (V4.1 双发引擎防误报版)
 # ==========================================
 def get_realtime_data(proxy_code: str, eod_vol_str: str):
     if not proxy_code: return None, None, "无代码", None
+    
+    prefix = "sh" if proxy_code.startswith("5") else "sz"
+    current_price, pct_change, today_turnover = None, None, None
+    
+    # 🛡️ 引擎 A：首选腾讯极速 API
     try:
-        prefix = "sh" if proxy_code.startswith("5") else "sz"
-        url = f"http://qt.gtimg.cn/q={prefix}{proxy_code}"
-        resp = fetch_with_timeout(requests.get, 3, url)
-        if resp:
-            data = resp.text.split('~')
-            if len(data) > 40:
-                current_price = float(data[3])
-                pct_change = float(data[32])
-                today_turnover = float(data[37]) * 10000
-                if today_turnover < 50000000: return current_price, pct_change, "枯竭", 1.0
-                now_bj = datetime.datetime.now(pytz.timezone('Asia/Shanghai'))
-                if now_bj.time() < datetime.time(13, 30): return current_price, pct_change, "早盘失真", 1.0
-                if eod_vol_str:
-                    try:
-                        eod_vol = float(eod_vol_str.replace(",", ""))
-                        if now_bj.time() <= datetime.time(15, 0): minutes_passed = 120 + (now_bj.hour * 60 + now_bj.minute) - (13 * 60)
-                        else: minutes_passed = 240
-                        minutes_passed = max(1, minutes_passed)
-                        raw_vol_ratio = (today_turnover / minutes_passed) / (eod_vol / 240)
-                        vol_tag = "平量"
-                        if raw_vol_ratio > 1.2: vol_tag = "放量"
-                        elif raw_vol_ratio < 0.8: vol_tag = "缩量"
-                        return current_price, pct_change, f"{vol_tag}({raw_vol_ratio:.2f})", raw_vol_ratio
-                    except: pass
-                return current_price, pct_change, "量比未知", None
+        url_tx = f"http://qt.gtimg.cn/q={prefix}{proxy_code}"
+        resp = requests.get(url_tx, timeout=3)
+        data = resp.text.split('~')
+        if len(data) > 40:
+            current_price = float(data[3])
+            pct_change = float(data[32])
+            today_turnover = float(data[37]) * 10000 # 腾讯单位是万元，转为元
     except: pass
-    return None, None, "API异常", None
 
+    # 🛡️ 引擎 B：如果腾讯宕机/超时，瞬间切至新浪财经专线！
+    if current_price is None:
+        try:
+            url_sina = f"https://hq.sinajs.cn/list={prefix}{proxy_code}"
+            headers = {"Referer": "https://finance.sina.com.cn"}
+            resp = requests.get(url_sina, headers=headers, timeout=3)
+            elements = resp.text.split(',')
+            if len(elements) > 10:
+                prev_close = float(elements[2])
+                current_price = float(elements[3])
+                if prev_close > 0: pct_change = (current_price - prev_close) / prev_close * 100
+                else: pct_change = 0.0
+                today_turnover = float(elements[9]) # 新浪单位直接是元
+        except: pass
+
+    # 🚨 双引擎全部熄火才判定为异常
+    if current_price is None:
+        return None, None, "API异常", None
+
+    try:
+        # 量比防诱多与枯竭逻辑
+        if today_turnover < 50000000: return current_price, pct_change, "枯竭", 1.0
+        
+        now_bj = datetime.datetime.now(pytz.timezone('Asia/Shanghai'))
+        if now_bj.time() < datetime.time(13, 30): return current_price, pct_change, "早盘失真", 1.0
+        
+        if eod_vol_str:
+            eod_vol = float(str(eod_vol_str).replace(",", ""))
+            if now_bj.time() <= datetime.time(15, 0): minutes_passed = 120 + (now_bj.hour * 60 + now_bj.minute) - (13 * 60)
+            else: minutes_passed = 240
+            minutes_passed = max(1, minutes_passed)
+            raw_vol_ratio = (today_turnover / minutes_passed) / (eod_vol / 240)
+            
+            vol_tag = "平量"
+            if raw_vol_ratio > 1.2: vol_tag = "放量"
+            elif raw_vol_ratio < 0.8: vol_tag = "缩量"
+            return current_price, pct_change, f"{vol_tag}({raw_vol_ratio:.2f})", raw_vol_ratio
+            
+    except: pass
+    
+    return current_price, pct_change, "量比未知", None
 # ==========================================
 # 3. 全阵地情报收集 (V5.1 微信极简瘦身版)
 # ==========================================
